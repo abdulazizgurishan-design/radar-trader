@@ -168,6 +168,18 @@ export default function App() {
   const [tab,setTab]=useState("dashboard");
   const [equityHist,setEquityHist]=useState({});
   const [expandedPos,setExpandedPos]=useState(null); // السهم المفتوح شارته
+  const [closingPos,setClosingPos]=useState(null); // السهم الذي يتم إغلاقه
+
+  const closeOne = async(symbol)=>{
+    setClosingPos(symbol);
+    try {
+      const r=await fetch("/api/closeone",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol})});
+      const d=await r.json();
+      setMsg(d.success?`تم إغلاق ${symbol} ✅`:`خطأ في إغلاق ${symbol}`);
+      load();
+    } catch { setMsg("خطأ في الاتصال"); }
+    finally { setClosingPos(null); }
+  };
 
   const load = useCallback(async()=>{
     try {
