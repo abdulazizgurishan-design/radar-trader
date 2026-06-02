@@ -221,6 +221,19 @@ export default function App() {
   const ca=parseFloat(acc?.cash||0);
   const pl=eq-parseFloat(acc?.last_equity||0);
 
+  // حالة السوق
+  const marketStatus = () => {
+    const now = new Date();
+    const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+    const h = et.getHours(), m = et.getMinutes(), day = et.getDay();
+    if(day === 0 || day === 6) return { open: false, label: "السوق مغلق — عطلة نهاية الأسبوع 🔴" };
+    const mins = h * 60 + m;
+    if(mins >= 570 && mins < 960) return { open: true, label: "السوق مفتوح 🟢" };
+    if(mins >= 480 && mins < 570) return { open: false, label: "ما قبل السوق ⏳" };
+    return { open: false, label: "السوق مغلق 🔴" };
+  };
+  const market = marketStatus();
+
   const today = new Date().toLocaleDateString("en-CA");
   const todayOrders = ord.filter(o => o.filled_at && new Date(o.filled_at).toLocaleDateString("en-CA")===today);
   const sellOrders = todayOrders.filter(o => o.side==="sell" && o.status==="filled");
