@@ -13,7 +13,6 @@ export default async function handler(req, res) {
   const { symbol } = req.body;
   if(!symbol) return res.status(400).json({ error: "symbol required" });
   try {
-    // 1. إلغاء كل الأوامر المعلقة لهذا السهم أولاً
     const ordersRes = await fetch(`${ALPACA_BASE}/v2/orders?status=open&symbols=${symbol}`, { headers: H });
     const orders = await ordersRes.json();
     if(Array.isArray(orders)) {
@@ -21,7 +20,6 @@ export default async function handler(req, res) {
         await fetch(`${ALPACA_BASE}/v2/orders/${o.id}`, { method: "DELETE", headers: H });
       }
     }
-    // 2. انتظر ثانية ثم أغلق المركز
     await new Promise(r => setTimeout(r, 1000));
     const r = await fetch(`${ALPACA_BASE}/v2/positions/${symbol}`, { method: "DELETE", headers: H });
     const d = await r.json();
