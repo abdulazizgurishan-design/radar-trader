@@ -1,3 +1,4 @@
+// v2
 import { useState, useEffect, useCallback } from "react";
 const B = "https://paper-api.alpaca.markets";
 const H = () => ({ "APCA-API-KEY-ID": process.env.NEXT_PUBLIC_ALPACA_KEY, "APCA-API-SECRET-KEY": process.env.NEXT_PUBLIC_ALPACA_SECRET });
@@ -23,7 +24,7 @@ export default function App() {
     try {
       const r=await fetch("/api/trade",{method:"POST"});
       const d=await r.json();
-      setMsg(d.tradesPlaced>0?`نُفذت ${d.tradesPlaced} صفقة`:(d.message||"لا توجد فرص"));
+      setMsg(d.tradesPlaced>0?`نفذت ${d.tradesPlaced} صفقة`:(d.message||"لا توجد فرص"));
       load();
     } catch { setMsg("خطأ في الاتصال"); } finally { setBusy(false); }
   };
