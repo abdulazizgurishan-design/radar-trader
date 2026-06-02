@@ -1,8 +1,9 @@
-// v5 - with P&L per trade and daily summary
+// v6 - with intraday stock chart per position
 import { useState, useEffect, useCallback } from "react";
 
 const fmt = (n) => parseFloat(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const pct = (n) => { const v=parseFloat(n||0); return (v>=0?"+":"")+v.toFixed(2)+"%"; };
+const POLYGON_KEY = process.env.NEXT_PUBLIC_POLYGON_KEY || "";
 
 const saveEquity = (equity) => {
   try {
@@ -19,7 +20,8 @@ const getEquityHistory = () => {
   try { return JSON.parse(localStorage.getItem("equityHistory")||"{}"); } catch(e){ return {}; }
 };
 
-const Chart = ({ data }) => {
+// رسم بياني للرصيد اليومي
+const EquityChart = ({ data }) => {
   const entries = Object.entries(data).sort(([a],[b])=>a.localeCompare(b));
   if(entries.length < 2) return (
     <div style={{textAlign:"center",color:"rgba(255,255,255,0.2)",fontSize:11,padding:"20px 0"}}>
@@ -41,10 +43,10 @@ const Chart = ({ data }) => {
   const polyline = pts.join(" ");
   const lastPt = pts[pts.length-1].split(",");
   return (
-    <div style={{overflowX:"auto"}}>
+    <div>
       <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{display:"block"}}>
         <defs>
-          <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={color} stopOpacity="0.3"/>
             <stop offset="100%" stopColor={color} stopOpacity="0"/>
           </linearGradient>
@@ -53,7 +55,7 @@ const Chart = ({ data }) => {
           <line key={r} x1={pad} y1={pad+(1-r)*(H-pad*2)} x2={W-pad} y2={pad+(1-r)*(H-pad*2)}
             stroke="rgba(255,255,255,0.05)" strokeWidth="1"/>
         ))}
-        <polygon points={`${pts[0].split(",")[0]},${H-pad} ${polyline} ${lastPt[0]},${H-pad}`} fill="url(#chartGrad)"/>
+        <polygon points={`${pts[0].split(",")[0]},${H-pad} ${polyline} ${lastPt[0]},${H-pad}`} fill="url(#eqGrad)"/>
         <polyline points={polyline} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
         <circle cx={lastPt[0]} cy={lastPt[1]} r="4" fill={color}/>
       </svg>
@@ -66,14 +68,85 @@ const Chart = ({ data }) => {
   );
 };
 
-// حساب الربح/الخسارة لكل صفقة بيع
+// شارت السهم اللحظي
+const StockChart = ({ symbol, entryPrice }) => {
+  const [bars, setBars] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchBars = async () => {
+      try {
+        const today = new Date().toLocaleDateString("en-CA");
+        const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/5/minute/${today}/${today}?adjusted=true&sort=asc&limit=100&apiKey=${POLYGON_KEY}`;
+        const r = await fetch(url);
+        const d = await r.json();
+        if(d.results && d.results.length > 0) setBars(d.results);
+      } catch(e) {}
+      finally { setLoading(false); }
+    };
+    fetchBars();
+  }, [symbol]);
+
+  if(loading) return <div style={{textAlign:"center",fontSize:10,color:"rgba(255,255,255,0.3)",padding:"10px 0"}}>⟳ جاري تحميل الشارت...</div>;
+  if(bars.length < 2) return <div style={{textAlign:"center",fontSize:10,color:"rgba(255,255,255,0.2)",padding:"10px 0"}}>لا توجد بيانات كافية</div>;
+
+  const closes = bars.map(b=>b.c);
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const range = max - min || 1;
+  const W = 280, H = 70, pad = 8;
+
+  const pts = closes.map((c,i) => {
+    const x = pad + (i/(closes.length-1))*(W-pad*2);
+    const y = H - pad - ((c-min)/range)*(H-pad*2);
+    return `${x},${y}`;
+  });
+
+  const lastClose = closes[closes.length-1];
+  const firstClose = closes[0];
+  const isUp = lastClose >= firstClose;
+  const color = isUp ? "#00d4aa" : "#ff4757";
+  const polyline = pts.join(" ");
+  const lastPt = pts[pts.length-1].split(",");
+
+  // خط سعر الدخول
+  const entryY = entryPrice ? H - pad - ((entryPrice-min)/range)*(H-pad*2) : null;
+
+  return (
+    <div style={{marginTop:10,padding:"10px",background:"rgba(0,0,0,0.3)",borderRadius:10}}>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{display:"block"}}>
+        <defs>
+          <linearGradient id={`grad_${symbol}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.25"/>
+            <stop offset="100%" stopColor={color} stopOpacity="0"/>
+          </linearGradient>
+        </defs>
+        {[0,0.5,1].map(r=>(
+          <line key={r} x1={pad} y1={pad+(1-r)*(H-pad*2)} x2={W-pad} y2={pad+(1-r)*(H-pad*2)}
+            stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+        ))}
+        {/* خط سعر الدخول */}
+        {entryY && entryY >= pad && entryY <= H-pad && (
+          <line x1={pad} y1={entryY} x2={W-pad} y2={entryY}
+            stroke="#fbbf24" strokeWidth="1" strokeDasharray="4,3"/>
+        )}
+        <polygon points={`${pts[0].split(",")[0]},${H-pad} ${polyline} ${lastPt[0]},${H-pad}`} fill={`url(#grad_${symbol})`}/>
+        <polyline points={polyline} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/>
+        <circle cx={lastPt[0]} cy={lastPt[1]} r="3" fill={color}/>
+      </svg>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"rgba(255,255,255,0.3)",marginTop:4}}>
+        <span style={{color:"#fbbf24"}}>— دخول ${fmt(entryPrice)}</span>
+        <span style={{color,fontWeight:700}}>${fmt(lastClose)}</span>
+        <span>{bars.length} شمعة · 5د</span>
+      </div>
+    </div>
+  );
+};
+
 const calcPnL = (order, allOrders) => {
   if(order.side !== "sell" || order.status !== "filled") return null;
-  // نبحث عن أمر شراء نفس السهم قبل البيع
   const buyOrder = allOrders.find(o =>
-    o.symbol === order.symbol &&
-    o.side === "buy" &&
-    o.status === "filled" &&
+    o.symbol === order.symbol && o.side === "buy" && o.status === "filled" &&
     new Date(o.filled_at) < new Date(order.filled_at)
   );
   if(!buyOrder) return null;
@@ -94,6 +167,7 @@ export default function App() {
   const [ts,setTs]=useState(null);
   const [tab,setTab]=useState("dashboard");
   const [equityHist,setEquityHist]=useState({});
+  const [expandedPos,setExpandedPos]=useState(null); // السهم المفتوح شارته
 
   const load = useCallback(async()=>{
     try {
@@ -104,10 +178,7 @@ export default function App() {
         setPos(Array.isArray(d.positions)?d.positions:[]);
         setOrd(Array.isArray(d.orders)?d.orders:[]);
         setTs(new Date());
-        if(d.account.equity) {
-          saveEquity(d.account.equity);
-          setEquityHist(getEquityHistory());
-        }
+        if(d.account.equity) { saveEquity(d.account.equity); setEquityHist(getEquityHistory()); }
       }
     } catch(e){console.error(e);}
   },[]);
@@ -138,13 +209,9 @@ export default function App() {
   const ca=parseFloat(acc?.cash||0);
   const pl=eq-parseFloat(acc?.last_equity||0);
 
-  // حساب ملخص اليوم
   const today = new Date().toLocaleDateString("en-CA");
-  const todayOrders = ord.filter(o => {
-    if(!o.filled_at) return false;
-    return new Date(o.filled_at).toLocaleDateString("en-CA") === today;
-  });
-  const sellOrders = todayOrders.filter(o => o.side === "sell" && o.status === "filled");
+  const todayOrders = ord.filter(o => o.filled_at && new Date(o.filled_at).toLocaleDateString("en-CA")===today);
+  const sellOrders = todayOrders.filter(o => o.side==="sell" && o.status==="filled");
   const todayPnLList = sellOrders.map(o => calcPnL(o, ord)).filter(Boolean);
   const todayTotalPL = todayPnLList.reduce((sum,x)=>sum+x.pl, 0);
   const todayTotalPct = eq > 0 ? (todayTotalPL / (eq - todayTotalPL)) * 100 : 0;
@@ -159,21 +226,18 @@ export default function App() {
 
   return (
     <div style={{minHeight:"100vh",background:"#080c18",color:"#fff",fontFamily:"system-ui",direction:"rtl",padding:"20px 16px 60px"}}>
-      {/* Header */}
       <div style={{textAlign:"center",marginBottom:20}}>
         <div style={{fontSize:32}}>🤖</div>
         <h1 style={{margin:"4px 0",fontSize:22,fontWeight:900,letterSpacing:2}}>RADAR <span style={{color:"#818cf8"}}>TRADER</span></h1>
         <div style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{ts?`آخر تحديث: ${ts.toLocaleTimeString("ar")}`:"جاري التحميل..."}</div>
       </div>
 
-      {/* Tabs */}
       <div style={{display:"flex",background:"rgba(255,255,255,0.03)",borderRadius:12,marginBottom:20,overflow:"hidden"}}>
         <button style={tabStyle("dashboard")} onClick={()=>setTab("dashboard")}>📊 الداشبورد</button>
         <button style={tabStyle("history")} onClick={()=>setTab("history")}>📋 السجل</button>
       </div>
 
       {tab==="dashboard" && <>
-        {/* Stats */}
         {acc && <div style={{display:"flex",gap:10,marginBottom:20}}>
           {[
             {l:"إجمالي الرصيد",v:`$${fmt(eq)}`,c:"#00d4aa"},
@@ -188,13 +252,11 @@ export default function App() {
           ))}
         </div>}
 
-        {/* Chart */}
         <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:16,padding:"14px 12px",marginBottom:20}}>
           <div style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:10}}>📈 تطور الرصيد</div>
-          <Chart data={equityHist}/>
+          <EquityChart data={equityHist}/>
         </div>
 
-        {/* Buttons */}
         <button onClick={trade} disabled={busy} style={{width:"100%",background:busy?"rgba(255,255,255,0.05)":"linear-gradient(135deg,#6366f1,#8b5cf6)",border:"none",borderRadius:14,padding:14,color:busy?"rgba(255,255,255,0.3)":"#fff",fontWeight:800,fontSize:15,cursor:busy?"not-allowed":"pointer",marginBottom:8,boxShadow:busy?"none":"0 8px 32px rgba(99,102,241,0.4)"}}>
           {busy?"⟳ جاري التداول...":"🚀 تداول الآن"}
         </button>
@@ -203,35 +265,42 @@ export default function App() {
         </button>
         {msg&&<div style={{textAlign:"center",fontSize:13,color:"#fbbf24",marginBottom:16}}>{msg}</div>}
 
-        {/* Open positions */}
         <div style={{marginBottom:24}}>
           <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:10}}>📊 صفقات مفتوحة ({pos.length})</div>
           {pos.length===0
             ?<div style={{textAlign:"center",color:"rgba(255,255,255,0.2)",fontSize:12,padding:20,background:"rgba(255,255,255,0.02)",borderRadius:12}}>لا توجد صفقات مفتوحة</div>
-            :pos.map(p=>{const up=parseFloat(p.unrealized_pl||0)>=0;return(
-              <div key={p.symbol} style={{background:"rgba(15,20,35,0.95)",border:`1px solid ${up?"rgba(0,212,170,0.2)":"rgba(255,71,87,0.2)"}`,borderRadius:14,padding:"14px 16px",marginBottom:10,borderRight:`3px solid ${up?"#00d4aa":"#ff4757"}`}}>
-                <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
-                  <div style={{fontFamily:"monospace",fontSize:17,fontWeight:800}}>{p.symbol}</div>
-                  <div style={{textAlign:"left"}}>
-                    <div style={{fontSize:15,fontWeight:700,color:up?"#00d4aa":"#ff4757",fontFamily:"monospace"}}>{up?"+":""}${fmt(p.unrealized_pl)}</div>
-                    <div style={{fontSize:11,color:up?"#00d4aa":"#ff4757"}}>{pct(parseFloat(p.unrealized_plpc||0)*100)}</div>
-                  </div>
-                </div>
-                <div style={{display:"flex",gap:8}}>
-                  {[{l:"الكمية",v:p.qty},{l:"الدخول",v:`$${fmt(p.avg_entry_price)}`},{l:"الحالي",v:`$${fmt(p.current_price)}`},{l:"القيمة",v:`$${fmt(p.market_value)}`}].map(m=>(
-                    <div key={m.l} style={{flex:1,background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"6px 8px",textAlign:"center"}}>
-                      <div style={{fontSize:11,fontWeight:700,color:"#f1f5f9",fontFamily:"monospace"}}>{m.v}</div>
-                      <div style={{fontSize:8,color:"rgba(255,255,255,0.3)",marginTop:2}}>{m.l}</div>
+            :pos.map(p=>{
+              const up=parseFloat(p.unrealized_pl||0)>=0;
+              const isExpanded = expandedPos===p.symbol;
+              return(
+                <div key={p.symbol} style={{background:"rgba(15,20,35,0.95)",border:`1px solid ${up?"rgba(0,212,170,0.2)":"rgba(255,71,87,0.2)"}`,borderRadius:14,padding:"14px 16px",marginBottom:10,borderRight:`3px solid ${up?"#00d4aa":"#ff4757"}`}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
+                    <div style={{fontFamily:"monospace",fontSize:17,fontWeight:800}}>{p.symbol}</div>
+                    <div style={{textAlign:"left"}}>
+                      <div style={{fontSize:15,fontWeight:700,color:up?"#00d4aa":"#ff4757",fontFamily:"monospace"}}>{up?"+":""}${fmt(p.unrealized_pl)}</div>
+                      <div style={{fontSize:11,color:up?"#00d4aa":"#ff4757"}}>{pct(parseFloat(p.unrealized_plpc||0)*100)}</div>
                     </div>
-                  ))}
+                  </div>
+                  <div style={{display:"flex",gap:8,marginBottom:10}}>
+                    {[{l:"الكمية",v:p.qty},{l:"الدخول",v:`$${fmt(p.avg_entry_price)}`},{l:"الحالي",v:`$${fmt(p.current_price)}`},{l:"القيمة",v:`$${fmt(p.market_value)}`}].map(m=>(
+                      <div key={m.l} style={{flex:1,background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"6px 8px",textAlign:"center"}}>
+                        <div style={{fontSize:11,fontWeight:700,color:"#f1f5f9",fontFamily:"monospace"}}>{m.v}</div>
+                        <div style={{fontSize:8,color:"rgba(255,255,255,0.3)",marginTop:2}}>{m.l}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* زر الشارت */}
+                  <button onClick={()=>setExpandedPos(isExpanded?null:p.symbol)} style={{width:"100%",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,padding:"6px",color:"rgba(255,255,255,0.5)",fontSize:11,cursor:"pointer"}}>
+                    {isExpanded?"▲ إخفاء الشارت":"📉 عرض الشارت"}
+                  </button>
+                  {isExpanded && <StockChart symbol={p.symbol} entryPrice={parseFloat(p.avg_entry_price||0)}/>}
                 </div>
-              </div>
-            );})}
+              );
+            })}
         </div>
       </>}
 
       {tab==="history" && <>
-        {/* Summary stats */}
         <div style={{display:"flex",gap:10,marginBottom:16}}>
           {[
             {l:"إجمالي الصفقات",v:ord.length,c:"#818cf8"},
@@ -245,7 +314,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* Daily P&L Summary */}
         {todayPnLList.length > 0 && (
           <div style={{background:`rgba(${todayTotalPL>=0?"0,212,170":"255,71,87"},0.08)`,border:`1px solid ${todayTotalPL>=0?"rgba(0,212,170,0.3)":"rgba(255,71,87,0.3)"}`,borderRadius:16,padding:"16px",marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:8}}>📊 ملخص اليوم</div>
@@ -254,9 +322,7 @@ export default function App() {
                 <div style={{fontSize:22,fontWeight:900,color:todayTotalPL>=0?"#00d4aa":"#ff4757",fontFamily:"monospace"}}>
                   {todayTotalPL>=0?"+":""}${fmt(todayTotalPL)}
                 </div>
-                <div style={{fontSize:12,color:todayTotalPL>=0?"#00d4aa":"#ff4757"}}>
-                  {pct(todayTotalPct)}
-                </div>
+                <div style={{fontSize:12,color:todayTotalPL>=0?"#00d4aa":"#ff4757"}}>{pct(todayTotalPct)}</div>
               </div>
               <div style={{textAlign:"left"}}>
                 <div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>صفقات مغلقة اليوم</div>
@@ -266,7 +332,6 @@ export default function App() {
           </div>
         )}
 
-        {/* All orders with P&L */}
         <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:10}}>📋 كل الصفقات</div>
         {ord.length===0
           ?<div style={{textAlign:"center",color:"rgba(255,255,255,0.2)",fontSize:12,padding:40,background:"rgba(255,255,255,0.02)",borderRadius:12}}>لا توجد صفقات بعد</div>
@@ -288,12 +353,8 @@ export default function App() {
                   <div style={{textAlign:"left"}}>
                     {pnl ? (
                       <div>
-                        <div style={{fontSize:14,fontWeight:800,color:pnl.pl>=0?"#00d4aa":"#ff4757",fontFamily:"monospace"}}>
-                          {pnl.pl>=0?"+":""}${fmt(pnl.pl)}
-                        </div>
-                        <div style={{fontSize:11,color:pnl.pl>=0?"#00d4aa":"#ff4757",textAlign:"center"}}>
-                          {pct(pnl.plPct)}
-                        </div>
+                        <div style={{fontSize:14,fontWeight:800,color:pnl.pl>=0?"#00d4aa":"#ff4757",fontFamily:"monospace"}}>{pnl.pl>=0?"+":""}${fmt(pnl.pl)}</div>
+                        <div style={{fontSize:11,color:pnl.pl>=0?"#00d4aa":"#ff4757",textAlign:"center"}}>{pct(pnl.plPct)}</div>
                       </div>
                     ) : (
                       <div style={{fontSize:10,fontWeight:700,color:o.status==="filled"?"#00d4aa":o.status==="canceled"?"#ff4757":"#fbbf24",background:o.status==="filled"?"rgba(0,212,170,0.1)":o.status==="canceled"?"rgba(255,71,87,0.1)":"rgba(251,191,36,0.1)",padding:"3px 8px",borderRadius:20}}>
