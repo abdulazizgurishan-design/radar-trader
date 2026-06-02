@@ -3,28 +3,25 @@
 // Paper Trading (ديمو — لا فلوس حقيقية)
 // =============================================
 
-const ALPACA_KEY    = process.env.ALPACA_KEY;
-const ALPACA_SECRET = process.env.ALPACA_SECRET;
-const ALPACA_BASE   = "https://paper-api.alpaca.markets"; // ديمو — غيّر لـ api.alpaca.markets للحقيقي
+const ALPACA_KEY    = process.env.NEXT_PUBLIC_ALPACA_KEY;
+const ALPACA_SECRET = process.env.NEXT_PUBLIC_ALPACA_SECRET;
+const ALPACA_BASE   = "https://paper-api.alpaca.markets";
 
 // =============================================
 // ⚙️ استراتيجيتك — عدّل هنا فقط
 // =============================================
 const STRATEGY = {
-  minScore:        85,      // أقل score للدخول
-  maxChangePct:    6,       // أقصى نسبة ارتفاع للدخول — فوقها فات القطار
-  minChangePct:    2,       // أقل نسبة ارتفاع للدخول
-  minVolume:       300_000, // أقل حجم تداول
-  riskPerTrade:    0.03,    // 3% من المحفظة لكل صفقة
-  maxOpenTrades:   5,       // أقصى صفقات مفتوحة في نفس الوقت
-  onlyAboveVWAP:   true,    // شرط: السعر فوق VWAP
-  minRR:           1.5,     // أقل نسبة ربح/خسارة
-  takeProfitPct:   0.025,   // الخروج بعد +2.5% من سعر الدخول
+  minScore:        85,
+  maxChangePct:    6,
+  minChangePct:    2,
+  minVolume:       300_000,
+  riskPerTrade:    0.03,
+  maxOpenTrades:   5,
+  onlyAboveVWAP:   true,
+  minRR:           1.5,
+  takeProfitPct:   0.025,
 };
 
-// =============================================
-// Helper: جلب رصيد الحساب
-// =============================================
 async function getAccountBalance() {
   const res = await fetch(`${ALPACA_BASE}/v2/account`, {
     headers: {
@@ -36,9 +33,6 @@ async function getAccountBalance() {
   return parseFloat(data.equity || data.cash || 0);
 }
 
-// =============================================
-// Helper: جلب الصفقات المفتوحة حالياً
-// =============================================
 async function getOpenPositions() {
   const res = await fetch(`${ALPACA_BASE}/v2/positions`, {
     headers: {
@@ -49,9 +43,6 @@ async function getOpenPositions() {
   return await res.json();
 }
 
-// =============================================
-// Helper: إرسال أمر شراء
-// =============================================
 async function placeOrder({ symbol, qty, stopLoss, takeProfit }) {
   const body = {
     symbol,
@@ -77,9 +68,6 @@ async function placeOrder({ symbol, qty, stopLoss, takeProfit }) {
   return await res.json();
 }
 
-// =============================================
-// Helper: فحص هل السهم عنده مركز مفتوح
-// =============================================
 async function hasOpenPosition(symbol) {
   try {
     const res = await fetch(`${ALPACA_BASE}/v2/positions/${symbol}`, {
@@ -94,22 +82,17 @@ async function hasOpenPosition(symbol) {
   }
 }
 
-// =============================================
-// Handler الرئيسي
-// =============================================
 export default async function handler(req, res) {
-  // فقط POST
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    // 1. جلب نتائج الرادار
-    const scanRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/scan`);
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+    const scanRes = await fetch(`${baseUrl}/api/scan`);
     const scanData = await scanRes.json();
     const candidates = scanData.results ?? [];
 
-    // 2. فلترة بناءً على الاستراتيجية
     const filtered = candidates.filter(s =>
       s.score          >= STRATEGY.minScore      &&
       s.change_pct     <= STRATEGY.maxChangePct  &&
@@ -123,7 +106,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, message: "لا توجد فرص تستوفي الشروط", trades: [] });
     }
 
-    // 3. جلب رصيد الحساب والمراكز المفتوحة
     const [balance, openPositions] = await Promise.all([
       getAccountBalance(),
       getOpenPositions(),
@@ -144,16 +126,13 @@ export default async function handler(req, res) {
     const trades = [];
 
     for (const stock of toTrade) {
-      // تحقق ما في مركز مفتوح لنفس السهم
       const alreadyOpen = await hasOpenPosition(stock.symbol);
       if (alreadyOpen) continue;
 
-      // حساب الكمية بناءً على نسبة المخاطرة
       const tradeAmount = balance * STRATEGY.riskPerTrade;
       const qty = Math.floor(tradeAmount / stock.price);
       if (qty < 1) continue;
 
-      // إرسال الأمر مع وقف الخسارة والهدف الأول
       const order = await placeOrder({
         symbol:     stock.symbol,
         qty,
