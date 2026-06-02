@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 
 const ALPACA_BASE = "https://paper-api.alpaca.markets";
-const KEY    = process.env.NEXT_PUBLIC_ALPACA_KEY;
-const SECRET = process.env.NEXT_PUBLIC_ALPACA_SECRET;
+const KEY    = "AKJB26REF36E5DH5NLAUBALFFW";
+const SECRET = "Gn2oWK3hQqjXYnBLHZLZX5PVcGGGw19UZAezuk1puK4J";
 
 const headers = {
   "APCA-API-KEY-ID":     KEY,
@@ -34,13 +34,13 @@ function fmtPct(n) {
 }
 
 export default function Dashboard() {
-  const [account,   setAccount]   = useState(null);
-  const [positions, setPositions] = useState([]);
-  const [orders,    setOrders]    = useState([]);
-  const [loading,   setLoading]   = useState(true);
+  const [account,    setAccount]    = useState(null);
+  const [positions,  setPositions]  = useState([]);
+  const [orders,     setOrders]     = useState([]);
+  const [loading,    setLoading]    = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
-  const [trading,   setTrading]   = useState(false);
-  const [tradeMsg,  setTradeMsg]  = useState(null);
+  const [trading,    setTrading]    = useState(false);
+  const [tradeMsg,   setTradeMsg]   = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -84,22 +84,14 @@ export default function Dashboard() {
     }
   };
 
-  const equity   = parseFloat(account?.equity   || 0);
-  const cash     = parseFloat(account?.cash      || 0);
-  const dayPL    = parseFloat(account?.equity    || 0) - parseFloat(account?.last_equity || 0);
+  const equity   = parseFloat(account?.equity      || 0);
+  const cash     = parseFloat(account?.cash        || 0);
+  const dayPL    = parseFloat(account?.equity      || 0) - parseFloat(account?.last_equity || 0);
   const dayPLPct = account?.last_equity ? (dayPL / parseFloat(account.last_equity)) * 100 : 0;
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: "#080c18",
-      color: "#fff",
-      fontFamily: "system-ui",
-      direction: "rtl",
-      padding: "20px 16px 40px",
-    }}>
+    <div style={{ minHeight: "100vh", background: "#080c18", color: "#fff", fontFamily: "system-ui", direction: "rtl", padding: "20px 16px 40px" }}>
 
-      {/* Header */}
       <div style={{ textAlign: "center", marginBottom: 24 }}>
         <div style={{ fontSize: 32, marginBottom: 4 }}>🤖</div>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900, letterSpacing: 2 }}>
@@ -110,7 +102,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Balance Cards */}
       {account && (
         <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
           {[
@@ -127,53 +118,28 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Trade Button */}
-      <button onClick={runTrade} disabled={trading} style={{
-        width: "100%",
-        background: trading ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
-        border: "none", borderRadius: 14, padding: "14px",
-        color: trading ? "rgba(255,255,255,0.3)" : "#fff",
-        fontWeight: 800, fontSize: 15, cursor: trading ? "not-allowed" : "pointer",
-        marginBottom: 10, letterSpacing: 1,
-        boxShadow: trading ? "none" : "0 8px 32px rgba(99,102,241,0.4)",
-      }}>
+      <button onClick={runTrade} disabled={trading} style={{ width: "100%", background: trading ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg,#6366f1,#8b5cf6)", border: "none", borderRadius: 14, padding: "14px", color: trading ? "rgba(255,255,255,0.3)" : "#fff", fontWeight: 800, fontSize: 15, cursor: trading ? "not-allowed" : "pointer", marginBottom: 10, letterSpacing: 1, boxShadow: trading ? "none" : "0 8px 32px rgba(99,102,241,0.4)" }}>
         {trading ? "⟳ جاري التداول..." : "🚀 تداول الآن"}
       </button>
 
-      {tradeMsg && (
-        <div style={{ textAlign: "center", fontSize: 13, color: "#fbbf24", marginBottom: 16 }}>
-          {tradeMsg}
-        </div>
-      )}
+      {tradeMsg && <div style={{ textAlign: "center", fontSize: 13, color: "#fbbf24", marginBottom: 16 }}>{tradeMsg}</div>}
 
-      {/* Open Positions */}
       <div style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,0.5)", marginBottom: 10, letterSpacing: 1 }}>
-          📊 صفقات مفتوحة ({positions.length})
-        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,0.5)", marginBottom: 10 }}>📊 صفقات مفتوحة ({positions.length})</div>
         {loading ? (
           <div style={{ textAlign: "center", color: "rgba(255,255,255,0.2)", fontSize: 12, padding: 20 }}>جاري التحميل...</div>
         ) : positions.length === 0 ? (
-          <div style={{ textAlign: "center", color: "rgba(255,255,255,0.2)", fontSize: 12, padding: 20, background: "rgba(255,255,255,0.02)", borderRadius: 12 }}>
-            لا توجد صفقات مفتوحة
-          </div>
+          <div style={{ textAlign: "center", color: "rgba(255,255,255,0.2)", fontSize: 12, padding: 20, background: "rgba(255,255,255,0.02)", borderRadius: 12 }}>لا توجد صفقات مفتوحة</div>
         ) : positions.map(p => {
-          const pl     = parseFloat(p.unrealized_pl || 0);
-          const plPct  = parseFloat(p.unrealized_plpc || 0) * 100;
-          const isUp   = pl >= 0;
+          const pl = parseFloat(p.unrealized_pl || 0);
+          const plPct = parseFloat(p.unrealized_plpc || 0) * 100;
+          const isUp = pl >= 0;
           return (
-            <div key={p.symbol} style={{
-              background: "linear-gradient(135deg,rgba(15,20,35,0.95),rgba(20,28,48,0.95))",
-              border: `1px solid ${isUp ? "rgba(0,212,170,0.2)" : "rgba(255,71,87,0.2)"}`,
-              borderRadius: 14, padding: "14px 16px", marginBottom: 10,
-              borderRight: `3px solid ${isUp ? "#00d4aa" : "#ff4757"}`,
-            }}>
+            <div key={p.symbol} style={{ background: "linear-gradient(135deg,rgba(15,20,35,0.95),rgba(20,28,48,0.95))", border: `1px solid ${isUp ? "rgba(0,212,170,0.2)" : "rgba(255,71,87,0.2)"}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, borderRight: `3px solid ${isUp ? "#00d4aa" : "#ff4757"}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                 <div style={{ fontFamily: "monospace", fontSize: 17, fontWeight: 800 }}>{p.symbol}</div>
                 <div style={{ textAlign: "left" }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: isUp ? "#00d4aa" : "#ff4757", fontFamily: "monospace" }}>
-                    {isUp ? "+" : ""}${fmt(pl)}
-                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: isUp ? "#00d4aa" : "#ff4757", fontFamily: "monospace" }}>{isUp ? "+" : ""}${fmt(pl)}</div>
                   <div style={{ fontSize: 11, color: isUp ? "#00d4aa" : "#ff4757" }}>{fmtPct(plPct)}</div>
                 </div>
               </div>
@@ -195,34 +161,17 @@ export default function Dashboard() {
         })}
       </div>
 
-      {/* Closed Orders */}
       <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,0.5)", marginBottom: 10, letterSpacing: 1 }}>
-          ✅ آخر الصفقات المغلقة
-        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,0.5)", marginBottom: 10 }}>✅ آخر الصفقات المغلقة</div>
         {orders.length === 0 ? (
-          <div style={{ textAlign: "center", color: "rgba(255,255,255,0.2)", fontSize: 12, padding: 20, background: "rgba(255,255,255,0.02)", borderRadius: 12 }}>
-            لا توجد صفقات مغلقة
-          </div>
+          <div style={{ textAlign: "center", color: "rgba(255,255,255,0.2)", fontSize: 12, padding: 20, background: "rgba(255,255,255,0.02)", borderRadius: 12 }}>لا توجد صفقات مغلقة</div>
         ) : orders.slice(0, 10).map(o => (
-          <div key={o.id} style={{
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.06)",
-            borderRadius: 12, padding: "10px 14px", marginBottom: 8,
-            display: "flex", justifyContent: "space-between", alignItems: "center",
-          }}>
+          <div key={o.id} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: "10px 14px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 14 }}>{o.symbol}</div>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 2 }}>
-                {o.side === "buy" ? "🟢 شراء" : "🔴 بيع"} · {o.qty} سهم · ${fmt(o.filled_avg_price)}
-              </div>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 2 }}>{o.side === "buy" ? "🟢 شراء" : "🔴 بيع"} · {o.qty} سهم · ${fmt(o.filled_avg_price)}</div>
             </div>
-            <div style={{
-              fontSize: 10, fontWeight: 700,
-              color: o.status === "filled" ? "#00d4aa" : "rgba(255,255,255,0.3)",
-              background: o.status === "filled" ? "rgba(0,212,170,0.1)" : "rgba(255,255,255,0.05)",
-              padding: "3px 8px", borderRadius: 20,
-            }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: o.status === "filled" ? "#00d4aa" : "rgba(255,255,255,0.3)", background: o.status === "filled" ? "rgba(0,212,170,0.1)" : "rgba(255,255,255,0.05)", padding: "3px 8px", borderRadius: 20 }}>
               {o.status === "filled" ? "✅ منفذ" : o.status}
             </div>
           </div>
