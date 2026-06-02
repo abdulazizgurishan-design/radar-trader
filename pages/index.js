@@ -301,10 +301,15 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  {/* زر الشارت */}
-                  <button onClick={()=>setExpandedPos(isExpanded?null:p.symbol)} style={{width:"100%",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,padding:"6px",color:"rgba(255,255,255,0.5)",fontSize:11,cursor:"pointer"}}>
-                    {isExpanded?"▲ إخفاء الشارت":"📉 عرض الشارت"}
-                  </button>
+                  {/* أزرار الشارت والإغلاق */}
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>setExpandedPos(isExpanded?null:p.symbol)} style={{flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,padding:"6px",color:"rgba(255,255,255,0.5)",fontSize:11,cursor:"pointer"}}>
+                      {isExpanded?"▲ إخفاء":"📉 الشارت"}
+                    </button>
+                    <button onClick={()=>closeOne(p.symbol)} disabled={closingPos===p.symbol} style={{flex:1,background:"rgba(255,71,87,0.1)",border:"1px solid rgba(255,71,87,0.3)",borderRadius:8,padding:"6px",color:closingPos===p.symbol?"rgba(255,255,255,0.3)":"#ff4757",fontSize:11,fontWeight:700,cursor:closingPos===p.symbol?"not-allowed":"pointer"}}>
+                      {closingPos===p.symbol?"⟳ جاري...":"🔴 إغلاق"}
+                    </button>
+                  </div>
                   {isExpanded && <StockChart symbol={p.symbol} entryPrice={parseFloat(p.avg_entry_price||0)}/>}
                 </div>
               );
