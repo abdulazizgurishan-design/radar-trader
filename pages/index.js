@@ -6,7 +6,7 @@ const get = (u) => fetch(u, { headers: H() }).then(r => r.json());
 const fmt = (n) => parseFloat(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const pct = (n) => { const v=parseFloat(n||0); return (v>=0?"+":"")+v.toFixed(2)+"%"; };
 export default function App() {
-  const [acc,setAcc]=useState(null);
+  const [acc,setAcc]=useState(null); 
   const [pos,setPos]=useState([]);
   const [ord,setOrd]=useState([]);
   const [busy,setBusy]=useState(false);
