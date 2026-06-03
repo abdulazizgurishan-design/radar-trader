@@ -255,6 +255,9 @@ export default function App() {
         <div style={{fontSize:32}}>🤖</div>
         <h1 style={{margin:"4px 0",fontSize:22,fontWeight:900,letterSpacing:2}}>RADAR <span style={{color:"#818cf8"}}>TRADER</span></h1>
         <div style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{ts?`آخر تحديث: ${ts.toLocaleTimeString("ar")}`:"جاري التحميل..."}</div>
+        <div style={{marginTop:6,display:"inline-block",background:market.open?"rgba(0,212,170,0.1)":"rgba(255,71,87,0.1)",border:`1px solid ${market.open?"rgba(0,212,170,0.3)":"rgba(255,71,87,0.3)"}`,borderRadius:20,padding:"3px 12px",fontSize:11,color:market.open?"#00d4aa":"#ff4757",fontWeight:700}}>
+          {market.label}
+        </div>
       </div>
 
       <div style={{display:"flex",background:"rgba(255,255,255,0.03)",borderRadius:12,marginBottom:20,overflow:"hidden"}}>
