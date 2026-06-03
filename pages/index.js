@@ -60,9 +60,9 @@ const EquityChart = ({ data }) => {
         <circle cx={lastPt[0]} cy={lastPt[1]} r="4" fill={color}/>
       </svg>
       <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"rgba(255,255,255,0.3)",marginTop:4,padding:`0 ${pad}px`}}>
-        <span>{entries[0][0].slice(5)}</span>
+        <span>{entries[0][0].slice(5)} ◀ أقدم</span>
         <span style={{color,fontWeight:700}}>${fmt(values[values.length-1])}</span>
-        <span>{entries[entries.length-1][0].slice(5)}</span>
+        <span>أحدث ▶ {entries[entries.length-1][0].slice(5)}</span>
       </div>
     </div>
   );
