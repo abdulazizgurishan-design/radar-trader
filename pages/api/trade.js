@@ -1,22 +1,23 @@
-// /api/trade.js — استراتيجية محسّنة لهدف 1-2% يومياً
+// /api/trade.js — استراتيجية Radaraz الكاملة
 const ALPACA_KEY    = process.env.ALPACA_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET;
 const ALPACA_BASE   = "https://paper-api.alpaca.markets";
 
 const STRATEGY = {
-  minScore:        70,
-  minChangePct:    2,       // ارتفع +2% من الفتح
-  maxChangePct:    8,       // ما فات القطار
-  minVolume:       100_000,
-  minRvol:         1.5,     // حجم أعلى من المعتاد 1.5x
-  onlyAboveVWAP:   true,    // ✅ شرط أساسي
-  riskPerTrade:    0.05,    // 5% من المحفظة
-  maxOpenTrades:   4,       // أقصى 4 صفقات
-  takeProfitPct:   0.015,   // هدف 1.5%
-  stopLossPct:     0.01,    // وقف خسارة 1%
+  minScore:      65,
+  minChangePct:  1,
+  maxChangePct:  8,      // ✅ فوق 8% ما يدخل
+  minVolume:     100_000,
+  onlyAboveVWAP: true,
+  maxTrades:     8,      // ✅ 8 أسهم
+  riskPerTrade:  0.05,   // 5% من المحفظة لكل سهم
 };
 
-const H = { "APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET, "Content-Type": "application/json" };
+const H = {
+  "APCA-API-KEY-ID":     ALPACA_KEY,
+  "APCA-API-SECRET-KEY": ALPACA_SECRET,
+  "Content-Type":        "application/json",
+};
 
 async function getAccount() {
   const r = await fetch(`${ALPACA_BASE}/v2/account`, { headers: H });
@@ -35,19 +36,18 @@ async function hasOpenPosition(symbol) {
   } catch { return false; }
 }
 
-async function placeOrder({ symbol, qty, stopLoss, takeProfit }) {
+// شراء بسيط بدون bracket — المراقبة تتولى البيع
+async function placeMarketBuy({ symbol, qty, stopLoss }) {
   const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
     method: "POST",
     headers: H,
     body: JSON.stringify({
       symbol,
-      qty: qty.toString(),
-      side: "buy",
-      type: "market",
+      qty:           qty.toString(),
+      side:          "buy",
+      type:          "market",
       time_in_force: "day",
-      order_class: "bracket",
-      stop_loss:   { stop_price: stopLoss.toFixed(2) },
-      take_profit: { limit_price: takeProfit.toFixed(2) },
+      order_class:   "simple",
     }),
   });
   return await r.json();
@@ -57,14 +57,25 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // تحقق من وقت السوق — فقط أول ساعتين (9:30-11:30 AM نيويورك)
+    // ✅ فقط الساعة 4:40-4:50 م السعودية = 1:40-1:50 PM UTC
     const now = new Date();
     const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     const h = et.getHours(), m = et.getMinutes();
-    const minutesSinceOpen = (h - 9) * 60 + m - 30;
+    // السوق يفتح 9:30 AM ET = 4:30 PM السعودية
+    // نشتري بعد 10 دقائق = 9:40 AM ET
+    const totalMins = h * 60 + m;
+    const openMins  = 9 * 60 + 40;  // 9:40 AM ET
+    const closeMins = 9 * 60 + 55;  // نافذة 15 دقيقة فقط للدخول
 
-    if (minutesSinceOpen < 0 || minutesSinceOpen > 120) {
-      return res.status(200).json({ success: true, message: "خارج وقت التداول (9:30-11:30 AM)", trades: [] });
+    // اسمح بالتشغيل اليدوي في أي وقت لو method=POST مع force=true
+    const force = req.body?.force === true;
+
+    if (!force && (totalMins < openMins || totalMins > closeMins)) {
+      return res.status(200).json({
+        success: true,
+        message: `وقت الدخول 9:40-9:55 AM ET (4:40-4:55 م السعودية) — الآن ${h}:${String(m).padStart(2,'0')}`,
+        trades: []
+      });
     }
 
     // جلب نتائج الرادار
@@ -75,52 +86,61 @@ export default async function handler(req, res) {
 
     // فلترة بالاستراتيجية
     const filtered = candidates.filter(s =>
-      s.score       >= STRATEGY.minScore      &&
-      s.change_pct  >= STRATEGY.minChangePct  &&
-      s.change_pct  <= STRATEGY.maxChangePct  &&
-      s.volume      >= STRATEGY.minVolume     &&
-      (s.rvol == null || s.rvol >= STRATEGY.minRvol) &&
-      s.price > s.vwap  // ✅ VWAP
+      s.score      >= STRATEGY.minScore     &&
+      s.change_pct >= STRATEGY.minChangePct &&
+      s.change_pct <= STRATEGY.maxChangePct && // ✅ فوق 8% ما يدخل
+      s.volume     >= STRATEGY.minVolume    &&
+      s.price > s.vwap &&                      // ✅ VWAP
+      s.levels?.t1 && s.levels?.sl            // ✅ لازم عنده أهداف
     );
 
     if (filtered.length === 0)
       return res.status(200).json({ success: true, message: "لا توجد فرص تستوفي الشروط", trades: [] });
 
     const [account, openPositions] = await Promise.all([getAccount(), getOpenPositions()]);
-    const balance = parseFloat(account.equity || account.cash || 0);
+    const balance  = parseFloat(account.equity || account.cash || 0);
     const openCount = Array.isArray(openPositions) ? openPositions.length : 0;
 
-    if (openCount >= STRATEGY.maxOpenTrades)
-      return res.status(200).json({ success: true, message: `وصلت الحد الأقصى (${STRATEGY.maxOpenTrades})`, trades: [] });
+    if (openCount >= STRATEGY.maxTrades)
+      return res.status(200).json({ success: true, message: `وصلت الحد الأقصى (${STRATEGY.maxTrades} أسهم)`, trades: [] });
 
-    const toTrade = filtered.slice(0, STRATEGY.maxOpenTrades - openCount);
-    const trades = [];
+    const slots   = STRATEGY.maxTrades - openCount;
+    const toTrade = filtered.slice(0, slots);
+    const trades  = [];
 
     for (const stock of toTrade) {
       if (await hasOpenPosition(stock.symbol)) continue;
 
       const qty = Math.floor((balance * STRATEGY.riskPerTrade) / stock.price);
-      if (qty < 1) continue;
+      if (qty < 3) continue; // نحتاج على الأقل 3 أسهم عشان نقدر نقسم
 
-      const takeProfit = parseFloat((stock.price * (1 + STRATEGY.takeProfitPct)).toFixed(2));
-      const stopLoss   = parseFloat((stock.price * (1 - STRATEGY.stopLossPct)).toFixed(2));
+      const order = await placeMarketBuy({ symbol: stock.symbol, qty });
 
-      const order = await placeOrder({ symbol: stock.symbol, qty, stopLoss, takeProfit });
-
+      // حفظ خطة التداول في response عشان monitor يقرأها
       trades.push({
-        symbol:     stock.symbol,
-        price:      stock.price,
+        symbol:   stock.symbol,
+        price:    stock.price,
         qty,
-        takeProfit,
-        stopLoss,
-        score:      stock.score,
-        rvol:       stock.rvol,
-        status:     order.status ?? "error",
-        error:      order.message ?? null,
+        t1:       stock.levels.t1,
+        t2:       stock.levels.t2,
+        t3:       stock.levels.t3,
+        sl:       stock.levels.sl,
+        // كميات البيع
+        qtyT1:    Math.floor(qty * 0.5),  // 50%
+        qtyT2:    Math.floor(qty * 0.3),  // 30%
+        qtyT3:    qty - Math.floor(qty * 0.5) - Math.floor(qty * 0.3), // 20%
+        score:    stock.score,
+        status:   order.status ?? "error",
+        error:    order.message ?? null,
       });
     }
 
-    return res.status(200).json({ success: true, balance, tradesPlaced: trades.length, trades });
+    return res.status(200).json({
+      success:      true,
+      balance,
+      tradesPlaced: trades.length,
+      trades,
+    });
 
   } catch (error) {
     return res.status(200).json({ success: false, error: error.message });
