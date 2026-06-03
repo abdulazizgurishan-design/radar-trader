@@ -200,7 +200,7 @@ export default function App() {
   const trade = async()=>{
     setBusy(true); setMsg(null);
     try {
-      const r=await fetch("/api/trade",{method:"POST"});
+      const r=await fetch("/api/trade",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({force:true})});
       const d=await r.json();
       setMsg(d.tradesPlaced>0?`نفذت ${d.tradesPlaced} صفقة`:(d.message||"لا توجد فرص"));
       load();
