@@ -1,3 +1,4 @@
+// v2 - wider time window
 // /api/trade.js — استراتيجية Radaraz — هدف T1
 const ALPACA_KEY    = process.env.ALPACA_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET;
