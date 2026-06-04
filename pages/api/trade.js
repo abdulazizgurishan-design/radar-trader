@@ -1,5 +1,4 @@
-// v2 - wider time window
-// /api/trade.js — استراتيجية Radaraz — هدف T1
+// v3 - no time restriction, market hours check only
 const ALPACA_KEY    = process.env.ALPACA_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET;
 const ALPACA_BASE   = "https://paper-api.alpaca.markets";
@@ -7,11 +6,10 @@ const ALPACA_BASE   = "https://paper-api.alpaca.markets";
 const STRATEGY = {
   minScore:      65,
   minChangePct:  1,
-  maxChangePct:  8,      // ✅ فوق 8% ما يدخل
+  maxChangePct:  8,
   minVolume:     100_000,
-  onlyAboveVWAP: true,
-  maxTrades:     8,      // ✅ 8 أسهم
-  riskPerTrade:  0.05,   // 5% من المحفظة
+  maxTrades:     8,
+  riskPerTrade:  0.05,
 };
 
 const H = {
@@ -59,20 +57,18 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // ✅ نافذة الدخول: 9:40 AM - 2:30 PM ET = 4:40 م - 9:30 م السعودية
+    // تحقق إن السوق مفتوح فقط
     const now = new Date();
     const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-    const h   = et.getHours(), m = et.getMinutes();
+    const h   = et.getHours(), m = et.getMinutes(), day = et.getDay();
     const totalMins = h * 60 + m;
-    const openMins  = 9 * 60 + 40;   // 9:40 AM ET = 4:40 م السعودية
-    const closeMins = 14 * 60 + 30;  // 2:30 PM ET = 9:30 م السعودية
+    const isWeekend = day === 0 || day === 6;
+    const isMarketOpen = !isWeekend && totalMins >= 570 && totalMins < 960; // 9:30-16:00 ET
 
-    const force = req.body?.force === true;
-
-    if (!force && (totalMins < openMins || totalMins > closeMins)) {
+    if (!isMarketOpen) {
       return res.status(200).json({
         success: true,
-        message: `وقت التداول 4:40 م - 9:30 م السعودية — الآن ${h}:${String(m).padStart(2,'0')} ET`,
+        message: `السوق مغلق — يفتح الاثنين-الجمعة 4:30-11:00 م السعودية`,
         trades: []
       });
     }
@@ -123,8 +119,6 @@ export default async function handler(req, res) {
         qty,
         takeProfit,
         stopLoss,
-        t1Pct:      stock.levels.t1Pct,
-        slPct:      stock.levels.slPct,
         score:      stock.score,
         status:     order.status ?? "error",
         error:      order.message ?? null,
