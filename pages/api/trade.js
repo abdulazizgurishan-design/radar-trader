@@ -58,20 +58,20 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // ✅ نافذة الدخول: 9:40-9:55 AM ET = 4:40-4:55 م السعودية
+    // ✅ نافذة الدخول: 9:40 AM - 2:30 PM ET = 4:40 م - 9:30 م السعودية
     const now = new Date();
     const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     const h   = et.getHours(), m = et.getMinutes();
     const totalMins = h * 60 + m;
-    const openMins  = 9 * 60 + 40;
-    const closeMins = 9 * 60 + 55;
+    const openMins  = 9 * 60 + 40;   // 9:40 AM ET = 4:40 م السعودية
+    const closeMins = 14 * 60 + 30;  // 2:30 PM ET = 9:30 م السعودية
 
     const force = req.body?.force === true;
 
     if (!force && (totalMins < openMins || totalMins > closeMins)) {
       return res.status(200).json({
         success: true,
-        message: `وقت الدخول 4:40-4:55 م السعودية فقط — الآن ${h}:${String(m).padStart(2,'0')} ET`,
+        message: `وقت التداول 4:40 م - 9:30 م السعودية — الآن ${h}:${String(m).padStart(2,'0')} ET`,
         trades: []
       });
     }
@@ -86,10 +86,10 @@ export default async function handler(req, res) {
     const filtered = candidates.filter(s =>
       s.score      >= STRATEGY.minScore     &&
       s.change_pct >= STRATEGY.minChangePct &&
-      s.change_pct <= STRATEGY.maxChangePct && // ✅ فوق 8% ما يدخل
+      s.change_pct <= STRATEGY.maxChangePct &&
       s.volume     >= STRATEGY.minVolume    &&
-      s.price > s.vwap &&                      // ✅ VWAP
-      s.levels?.t1 && s.levels?.sl            // ✅ لازم عنده أهداف
+      s.price > s.vwap &&
+      s.levels?.t1 && s.levels?.sl
     );
 
     if (filtered.length === 0)
@@ -111,7 +111,6 @@ export default async function handler(req, res) {
       const qty = Math.floor((balance * STRATEGY.riskPerTrade) / stock.price);
       if (qty < 1) continue;
 
-      // ✅ استخدام أهداف الرادار مباشرة
       const takeProfit = parseFloat(stock.levels.t1.toFixed(2));
       const stopLoss   = parseFloat(stock.levels.sl.toFixed(2));
 
