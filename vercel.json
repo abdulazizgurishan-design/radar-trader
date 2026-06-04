@@ -6,10 +6,6 @@
       "schedule": "40 13 * * 1-5"
     },
     {
-      "path": "/api/monitor",
-      "schedule": "*/1 13-19 * * 1-5"
-    },
-    {
       "path": "/api/close",
       "schedule": "0 17 * * 1-5"
     }
