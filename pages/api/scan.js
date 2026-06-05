@@ -1,26 +1,20 @@
 const POLYGON_KEY = process.env.POLYGON_API_KEY;
 const BASE = "https://api.polygon.io";
 
-// ✅ التصنيف بناءً على القيمة السوقية
-// إذا marketCap متوفر: قيادي >= 500M
-// إذا marketCap غير متوفر: نستخدم السعر كمؤشر — قيادي إذا السعر >= $10
-const LEADERSHIP_MCAP_THRESHOLD = 500;  // مليون دولار
-const LEADERSHIP_PRICE_FALLBACK  = 10;  // دولار
+const LEADERSHIP_MCAP_THRESHOLD = 500;
+const LEADERSHIP_PRICE_FALLBACK  = 10;
 
 const WATCHLIST = [
-  // ✅ أسهم قيادية
   "NVDA","AMD","MSFT","META","GOOGL","AMZN","AAPL","TSLA","PLTR","SMCI",
   "MRNA","BNTX","VRTX","REGN","ILMN",
   "ENPH","FSLR","MP","PLUG","CHPT",
   "COIN","MSTR","HOOD","SOFI","UPST",
   "RIVN","LCID","JOBY","RKLB","ARKK",
-  // Batch 1
   "SOUN","BBAI","KULR","CRKN","NKLA","MULN","WISA","CBAT","BFRI","ATXS",
   "HOLO","BHAT","CLSK","MARA","RIOT","CIFR","BTBT","IREN","ARBK","MIGI",
   "ATER","CLOV","NAKD","IDEX","SENS","ZKIN","ENSC","BKKT","NRDY","SMFL",
   "ALLR","GFAI","TYGO","AGRI","NVFY","SIGA","GOVX","XELA","IMPP","AEYE",
   "PRPB","PBAX","SBET","INPX","CLRB","ATNF","AULT","TAOP","KPLT","SHOT",
-  // Batch 2
   "ABOS","ACBA","ACER","ACHL","ACMR","ACRX","ACST","ACTG","ACTU",
   "ADAP","ADCT","ADIL","ADMA","ADMP","ADMT","ADSE","ADTX","ADUS",
   "ADVM","ADXN","AEHR","AEIS","AENT","AERI","AFAR",
@@ -50,7 +44,6 @@ const WATCHLIST = [
   "AVAH","AVAV","AVDL","AVGR","AVID","AVIR","AVNW","AVPT","AVRO","AVTE",
   "AVTX","AVXL","AWRE","AXDX","AXGN","AXGT","AXLA","AXNX","AXSM","AXTI",
   "AYRO","AYTU","AZEK","AZPN","AZRE","AZTA","AZUL",
-  // Batch 3
   "BACK","BAND","BANF","BANR","BAOS","BARK","BBCP","BBIO","BBLG","BBSI",
   "BCAB","BCAL","BCAN","BCDA","BCEL","BCLI","BCML","BCOV","BCPC","BCTX",
   "BCYC","BDSX","BDTX","BEAM","BEAT","BECN","BEEM","BFLY","BGFV","BGRY",
@@ -63,7 +56,6 @@ const WATCHLIST = [
   "BROG","BRTX","BRWC","BRWS","BSFC","BSGM","BSRR","BSVN","BTAI","BTBT",
   "BTCS","BTCM","BTDR","BTEL","BTMD","BTTX","BTOG","BUJA","BURU","BVNK",
   "BWMN","BWSN","BXRX","BYFC","BYNO","BYRN","BYSI","BZFD",
-  // Batch 4
   "CAAS","CABA","CAPR","CARV","CASM","CATO","CBAT","CBFV","CBIO","CBNK",
   "CBRL","CBRN","CBSH","CBTX","CCAP","CCCC","CCEP","CCIX","CCLP","CCNC",
   "CCOJ","CCSI","CCTS","CDAK","CDMO","CDNA","CDNS","CDRE","CDRO","CDTX",
@@ -75,7 +67,6 @@ const WATCHLIST = [
   "CLGN","CLIR","CLMB","CLMT","CLNE","CLNN","CLNV","CLOV","CLPR","CLPS",
   "CLRB","CLRO","CLSD","CLSK","CLST","CLVR","CLVT","CLWT","CMBT","CMCO",
   "CMCT","CMDV","CMLS","CMMB","CMND","CMPO","CMPS","CMRX","CMTG","CMTS",
-  // Batch 5
   "CNDB","CNET","CNEY","CNFR","CNGL","CNGX","CNOB","CNSL","CNSP","CNTB",
   "CNTG","CNVS","CNXT","COCH","COCP","CODX","COEP","COFS","COHU","COIN",
   "COKE","COLI","COLM","COMS","CONN","COOL","COOP","COPS","COPT","CORR",
@@ -86,7 +77,6 @@ const WATCHLIST = [
   "CRWS","CSCW","CSGP","CSGS","CSIA","CSII","CSIQ","CSPI","CSSE","CSTA",
   "CSTE","CSTL","CSTR","CSWC","CSWI","CTGO","CTIB","CTIC","CTLT","CTMX",
   "CTON","CTOS","CTRA","CTRE","CTRL","CTSO","CTXR","CTXS","CUBS","CUEN",
-  // Batch 6
   "DARE","DBGI","DBVT","DCBO","DCFC","DCGO","DCOM","DCTH","DDOG","DELT",
   "DEMO","DENN","DERA","DGHI","DGII","DGLY","DGNX","DGNU","DGTI","DHIL",
   "DHTX","DIBS","DIGS","DIOD","DIST","DJCO","DKNG","DLHC","DLPN","DLTH",
@@ -94,7 +84,6 @@ const WATCHLIST = [
   "DOMO","DOOO","DORM","DOUG","DOVA","DPCS","DPSI","DRAY","DRCT","DRNA",
   "DRRX","DRVN","DSAQ","DSGN","DSGX","DSKE","DSON","DSPC","DSSI","DSWL",
   "DTEA","DTIL","DTSS","DUET","DUOL","DURO","DXPE","DXYN","DYAI","DYNS",
-  // Batch 7
   "EACO","EARN","EAST","EBIX","EBMT","EBTC","ECBK","ECOR","ECPG","EDBL",
   "EDIT","EDRY","EDSA","EFOI","EFSH","EGAN","EGBN","EGHT","EGIO","EGLT",
   "EGRX","EKSO","ELEV","ELSE","ELVA","EMBC","EMKR","EMMS","EMTX","ENER",
@@ -102,14 +91,12 @@ const WATCHLIST = [
   "ENVX","EOLS","EOSE","EPAZ","EPIX","EPOW","EPZM","EQBK","ERAS","ERES",
   "ERIC","ERII","ESEA","ESMT","ESNT","ESPR","ESSA","ESTC","ETNB","ETSY",
   "EVAX","EVBG","EVGO","EVIO","EVLV","EVMO","EVOK","EVTL","EVTV","EXFY",
-  // Batch 8
   "FBIO","FBLG","FBMS","FBNC","FBRT","FCAP","FCEL","FCPT","FDBC","FDEF",
   "FDMT","FEIM","FELE","FGEN","FHTX","FIBK","FINV","FIXX","FKWL","FLGC",
   "FLIC","FLLD","FLME","FLNC","FLNT","FLWS","FLXS","FMNB","FNKO","FNLC",
   "FNMA","FNTX","FOLD","FONR","FORE","FORM","FORR","FOSL","FRBA","FRBK",
   "FRGE","FRGT","FRLN","FROG","FRPH","FRPT","FRST","FRSX","FRTA","FSFG",
   "FSLR","FSTR","FTCI","FTFT","FTHM","FTLF","FTRE","FTSI","FUBO","FULT",
-  // Batch 9
   "GALT","GATO","GBOX","GCBC","GDEN","GDOT","GDYN","GENC","GENI","GEOS",
   "GERN","GFAI","GGAL","GHRS","GHSI","GIFI","GILT","GIMI","GLAD","GLBE",
   "GLBS","GLDD","GLMD","GLNG","GLPG","GLRE","GLSI","GLTO","GLTX","GLUE",
@@ -117,7 +104,6 @@ const WATCHLIST = [
   "GOEV","GOED","GOGL","GOGO","GOOD","GOPI","GORV","GOSS","GOVX","GPCR",
   "GPMT","GPOR","GPRE","GPRO","GRAM","GREE","GRIL","GRIN","GRMN","GRPN",
   "GRTS","GRTX","GRVY","GRWG","GSAT","GSBC","GSIT","GSMG","GTLB","GTLS",
-  // Batch 10
   "HAIN","HALL","HALO","HARP","HAYN","HBCP","HBIO","HCAT","HCCI","HCDI",
   "HCSG","HCWB","HDSN","HEAR","HEES","HEPA","HEPS","HERO","HEXO","HFWA",
   "HGEN","HIBB","HIFS","HIIQ","HIMS","HIPO","HITI","HIVE","HKIT","HLLY",
@@ -135,7 +121,6 @@ export default async function handler(req, res) {
     const isWeekend   = day === 0 || day === 6;
     const isPreMarket = !isWeekend && h >= 4 && (h < 9 || (h === 9 && m < 30));
 
-    // ✅ FIX 4: استخدام MIN_VOLUME الصحيح بدل الرقم الثابت
     const MIN_VOLUME = isPreMarket ? 5000 : 20000;
 
     const uniqueList = [...new Set(WATCHLIST)];
@@ -161,6 +146,7 @@ export default async function handler(req, res) {
     for (const data of allTickers) {
       const ticker = data.ticker;
 
+      // ✅ السعر الأصلي الموثوق
       let price  = data.min?.c ?? data.lastTrade?.p ?? data.day?.c ?? 0;
       let volume = data.day?.v ?? 0;
 
@@ -170,14 +156,12 @@ export default async function handler(req, res) {
       }
 
       if (price < 0.5 || price > 500) continue;
-
-      // ✅ FIX 4: استخدام المتغير الصحيح
       if (volume < MIN_VOLUME) continue;
 
-      const prevClose = data.prevDay?.c || price;
-      const changePct = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+      const prevClose = data.prevDay?.c ?? 0;
+      if (!prevClose) continue;
 
-      // ✅ FIX 1: رفع الحد من 20% إلى 15% — فوق 15% فات القطار
+      const changePct = ((price - prevClose) / prevClose) * 100;
       if (changePct > 15) continue;
 
       const vwap      = data.day?.vw || price;
@@ -190,9 +174,10 @@ export default async function handler(req, res) {
       const tr   = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
       const atr  = Math.max(tr, price * 0.02);
 
-      const target1  = parseFloat((price + atr * 1.5).toFixed(2));
-      const target2  = parseFloat((price + atr * 3.0).toFixed(2));
-      const target3  = parseFloat((price + atr * 4.5).toFixed(2));
+      // ✅ أهداف مضبوطة ATR مخفف
+      const target1  = parseFloat((price + atr * 0.5).toFixed(2));
+      const target2  = parseFloat((price + atr * 1.0).toFixed(2));
+      const target3  = parseFloat((price + atr * 1.8).toFixed(2));
       const stopLoss = parseFloat(Math.max(price - atr * 0.8, price * 0.90).toFixed(2));
       const slPct    = parseFloat((((stopLoss - price) / price) * 100).toFixed(2));
       const t1Pct    = parseFloat((((target1 - price) / price) * 100).toFixed(2));
@@ -202,47 +187,51 @@ export default async function handler(req, res) {
       const reward   = target1 - price;
       const rr       = risk > 0 ? (reward / risk).toFixed(1) : "0";
 
-      let score = 30;
+      // ✅ توزيع نقاط محسّن — يبدأ من 0
+      let score = 0;
 
-      if (volume > 2_000_000)     score += 25;
-      else if (volume > 500_000)  score += 18;
-      else if (volume > 100_000)  score += 12;
-      else if (volume > 50_000)   score += 6;
+      // الحجم (30 نقطة)
+      if (volume > 5_000_000)      score += 30;
+      else if (volume > 2_000_000) score += 22;
+      else if (volume > 500_000)   score += 15;
+      else if (volume > 100_000)   score += 8;
 
-      if (changePct > 15)         score += 20;
-      else if (changePct > 10)    score += 15;
-      else if (changePct > 5)     score += 10;
-      else if (changePct > 2)     score += 5;
-      else if (changePct < 0)     score -= 5;
+      // نسبة التغيير (25 نقطة)
+      if (changePct >= 5 && changePct <= 15) score += 25;
+      else if (changePct >= 2)               score += 15;
+      else if (changePct >= 0)               score += 8;
 
-      if (aboveVWAP)              score += 15;
+      // ✅ VWAP محسّن (25 نقطة)
+      if (aboveVWAP)  score += 25;
+      else            score -= 10;
 
-      if (preGap > 10)            score += 10;
-      else if (preGap > 5)        score += 7;
-      else if (preGap > 2)        score += 4;
+      // Gap الافتتاح (15 نقطة)
+      if (preGap > 5)      score += 15;
+      else if (preGap > 2) score += 10;
+      else if (preGap > 0) score += 5;
 
-      const rrNum = parseFloat(rr);
-      if (rrNum >= 3)             score += 10;
-      else if (rrNum >= 2)        score += 6;
-      else if (rrNum >= 1.5)      score += 3;
-
-      score = Math.max(30, Math.min(score, 99));
-      if (score < 30) continue;
-
-      const confidence =
-        score >= 85 ? "💥 قوة قصوى" :
-        score >= 70 ? "🔥 إشارة ممتازة" : "👀 مراقبة";
-
-      const ema9  = data.day?.vw || null;
-      const ema20 = data.prevDay?.vw || null;
-
-      // ✅ FIX 3: rvol يُحسب من حجم اليوم السابق بدل رقم ثابت
+      // RVOL (10 نقطة)
       const prevVolume = data.prevDay?.v || null;
       const rvol = prevVolume && prevVolume > 0
         ? parseFloat((volume / prevVolume).toFixed(1))
         : null;
 
-      // تصنيف: قيادي إذا marketCap >= 500M، وإلا السعر >= $10
+      if (rvol) {
+        if (rvol >= 3)        score += 10;
+        else if (rvol >= 2)   score += 6;
+        else if (rvol >= 1.5) score += 3;
+      }
+
+      score = Math.max(0, Math.min(score, 99));
+      if (score < 30) continue;
+
+      const confidence =
+        score >= 80 ? "💥 قوة قصوى" :
+        score >= 65 ? "🔥 إشارة ممتازة" : "👀 مراقبة";
+
+      const ema9  = data.day?.vw || null;
+      const ema20 = data.prevDay?.vw || null;
+
       const mcapM = data.marketCap ? data.marketCap / 1_000_000 : null;
       const type = mcapM != null
         ? (mcapM >= LEADERSHIP_MCAP_THRESHOLD ? "قيادي" : "مضاربة")
@@ -256,13 +245,13 @@ export default async function handler(req, res) {
         rr,
         signal:     confidence,
         score,
-        type,                        // ✅ جديد
+        type,
         marketCap:  data.marketCap ? data.marketCap / 1_000_000 : null,
         ema9:       ema9  ? parseFloat(ema9.toFixed(2))  : null,
         ema20:      ema20 ? parseFloat(ema20.toFixed(2)) : null,
         rsi:        null,
         vwap:       parseFloat(vwap.toFixed(2)),
-        rvol,                        // ✅ مصلح
+        rvol,
         levels: {
           sl:    stopLoss, slPct,
           t1:    target1,  t1Pct,
@@ -275,10 +264,10 @@ export default async function handler(req, res) {
 
     finalResults.sort((a, b) => b.score - a.score || b.volume - a.volume);
 
-    // ✅ إرجاع 50 نتيجة — الـ frontend يفلتر حسب القسم
-    const all     = finalResults.slice(0, 50);
-    const leaders = all.filter(s => s.type === "قيادي");
-    const spec    = all.filter(s => s.type === "مضاربة");
+    // ✅ 20 قيادي + 30 مضاربة
+    const leaders = finalResults.filter(s => s.type === "قيادي").slice(0, 20);
+    const spec    = finalResults.filter(s => s.type === "مضاربة").slice(0, 30);
+    const all     = [...leaders, ...spec].sort((a, b) => b.score - a.score || b.volume - a.volume);
 
     return res.status(200).json({
       success:    true,
