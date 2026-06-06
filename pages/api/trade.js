@@ -1,15 +1,31 @@
-// v3 - no time restriction, market hours check only
+// v4 - dynamic risk based on score
 const ALPACA_KEY    = process.env.ALPACA_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET;
 const ALPACA_BASE   = "https://paper-api.alpaca.markets";
 
 const STRATEGY = {
-  minScore:      65,
-  minChangePct:  1,
-  maxChangePct:  8,
-  minVolume:     100_000,
-  maxTrades:     8,
-  riskPerTrade:  0.05,
+  minScore:     65,
+  minChangePct: 1,
+  maxChangePct: 8,
+  minVolume:    100_000,
+  maxTrades:    8,
+};
+
+// ✅ نسبة المخاطرة حسب قوة الإشارة
+const getRiskPct = (score) => {
+  if (score >= 85) return 0.08; // 8% — إشارة قوية جداً
+  if (score >= 75) return 0.06; // 6% — إشارة جيدة
+  return 0.05;                  // 5% — إشارة عادية
+};
+
+// ✅ عدد الصفقات حسب قوة السوق (نسبة الأسهم فوق VWAP)
+const getMaxTrades = (candidates) => {
+  if (candidates.length === 0) return 4;
+  const aboveVwap = candidates.filter(s => s.price > s.vwap).length;
+  const ratio = aboveVwap / candidates.length;
+  if (ratio >= 0.7) return 8; // سوق قوي
+  if (ratio >= 0.5) return 5; // سوق متوسط
+  return 3;                   // سوق ضعيف
 };
 
 const H = {
@@ -57,29 +73,29 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // تحقق إن السوق مفتوح فقط
     const now = new Date();
     const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     const h   = et.getHours(), m = et.getMinutes(), day = et.getDay();
     const totalMins = h * 60 + m;
     const isWeekend = day === 0 || day === 6;
-    const isMarketOpen = !isWeekend && totalMins >= 570 && totalMins < 960; // 9:30-16:00 ET
+    const isMarketOpen = !isWeekend && totalMins >= 570 && totalMins < 960;
 
     if (!isMarketOpen) {
       return res.status(200).json({
         success: true,
-        message: `السوق مغلق — يفتح الاثنين-الجمعة 4:30-11:00 م السعودية`,
+        message: "السوق مغلق — يفتح الاثنين-الجمعة 4:30-11:00 م السعودية",
         trades: []
       });
     }
 
-    // جلب نتائج الرادار
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
     const scanRes = await fetch(`${baseUrl}/api/scan`);
     const scanData = await scanRes.json();
     const candidates = scanData.results ?? [];
 
-    // فلترة
+    // ✅ حساب قوة السوق
+    const marketMaxTrades = getMaxTrades(candidates);
+
     const filtered = candidates.filter(s =>
       s.score      >= STRATEGY.minScore     &&
       s.change_pct >= STRATEGY.minChangePct &&
@@ -90,22 +106,32 @@ export default async function handler(req, res) {
     );
 
     if (filtered.length === 0)
-      return res.status(200).json({ success: true, message: "لا توجد فرص تستوفي الشروط", trades: [] });
+      return res.status(200).json({
+        success: true,
+        message: `لا توجد فرص — قوة السوق: ${marketMaxTrades === 8 ? "🔥 قوي" : marketMaxTrades === 5 ? "😐 متوسط" : "⚠️ ضعيف"}`,
+        trades: []
+      });
 
     const [account, openPositions] = await Promise.all([getAccount(), getOpenPositions()]);
     const balance   = parseFloat(account.equity || account.cash || 0);
     const openCount = Array.isArray(openPositions) ? openPositions.length : 0;
 
-    if (openCount >= STRATEGY.maxTrades)
-      return res.status(200).json({ success: true, message: `وصلت الحد الأقصى (${STRATEGY.maxTrades})`, trades: [] });
+    if (openCount >= marketMaxTrades)
+      return res.status(200).json({
+        success: true,
+        message: `وصلت الحد الأقصى (${marketMaxTrades} حسب قوة السوق)`,
+        trades: []
+      });
 
-    const toTrade = filtered.slice(0, STRATEGY.maxTrades - openCount);
+    const toTrade = filtered.slice(0, marketMaxTrades - openCount);
     const trades  = [];
 
     for (const stock of toTrade) {
       if (await hasOpenPosition(stock.symbol)) continue;
 
-      const qty = Math.floor((balance * STRATEGY.riskPerTrade) / stock.price);
+      // ✅ نسبة مخاطرة ديناميكية حسب Score
+      const riskPct = getRiskPct(stock.score);
+      const qty = Math.floor((balance * riskPct) / stock.price);
       if (qty < 1) continue;
 
       const takeProfit = parseFloat(stock.levels.t1.toFixed(2));
@@ -117,6 +143,7 @@ export default async function handler(req, res) {
         symbol:     stock.symbol,
         price:      stock.price,
         qty,
+        riskPct:    `${(riskPct*100).toFixed(0)}%`,
         takeProfit,
         stopLoss,
         score:      stock.score,
@@ -125,7 +152,13 @@ export default async function handler(req, res) {
       });
     }
 
-    return res.status(200).json({ success: true, balance, tradesPlaced: trades.length, trades });
+    return res.status(200).json({
+      success:      true,
+      balance,
+      marketStrength: marketMaxTrades === 8 ? "🔥 قوي" : marketMaxTrades === 5 ? "😐 متوسط" : "⚠️ ضعيف",
+      tradesPlaced: trades.length,
+      trades,
+    });
 
   } catch (error) {
     return res.status(200).json({ success: false, error: error.message });
