@@ -335,11 +335,12 @@ export default function App() {
       </>}
 
       {tab==="history" && <>
+        {/* ملخص الأرباح */}
         <div style={{display:"flex",gap:10,marginBottom:16}}>
           {[
-            {l:"إجمالي الصفقات",v:ord.length,c:"#818cf8"},
-            {l:"منفذة",v:ord.filter(o=>o.status==="filled").length,c:"#00d4aa"},
-            {l:"ملغية",v:ord.filter(o=>o.status==="canceled").length,c:"#ff4757"},
+            {l:"إجمالي البيع",v:ord.filter(o=>o.side==="sell"&&o.status==="filled").length,c:"#818cf8"},
+            {l:"رابحة",v:ord.filter(o=>o.side==="sell"&&o.status==="filled"&&calcPnL(o,ord)?.pl>=0).length,c:"#00d4aa"},
+            {l:"خاسرة",v:ord.filter(o=>o.side==="sell"&&o.status==="filled"&&calcPnL(o,ord)?.pl<0).length,c:"#ff4757"},
           ].map(x=>(
             <div key={x.l} style={{flex:1,background:`rgba(${x.c=="#818cf8"?"129,140,248":x.c=="#00d4aa"?"0,212,170":"255,71,87"},0.08)`,border:`1px solid ${x.c}33`,borderRadius:14,padding:"12px 8px",textAlign:"center"}}>
               <div style={{fontSize:20,fontWeight:900,color:x.c,fontFamily:"monospace"}}>{x.v}</div>
@@ -366,36 +367,35 @@ export default function App() {
           </div>
         )}
 
-        <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:10}}>📋 كل الصفقات</div>
-        {ord.length===0
-          ?<div style={{textAlign:"center",color:"rgba(255,255,255,0.2)",fontSize:12,padding:40,background:"rgba(255,255,255,0.02)",borderRadius:12}}>لا توجد صفقات بعد</div>
-          :ord.map(o=>{
+        {/* صفقات البيع المنفذة فقط */}
+        <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:10}}>📋 سجل الصفقات</div>
+        {ord.filter(o=>o.side==="sell"&&o.status==="filled").length===0
+          ?<div style={{textAlign:"center",color:"rgba(255,255,255,0.2)",fontSize:12,padding:40,background:"rgba(255,255,255,0.02)",borderRadius:12}}>لا توجد صفقات مغلقة بعد</div>
+          :ord.filter(o=>o.side==="sell"&&o.status==="filled").map(o=>{
             const pnl = calcPnL(o, ord);
+            const isProfit = pnl?.pl >= 0;
             return (
-              <div key={o.id} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${pnl?(pnl.pl>=0?"rgba(0,212,170,0.15)":"rgba(255,71,87,0.15)"):"rgba(255,255,255,0.06)"}`,borderRadius:12,padding:"12px 14px",marginBottom:8}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div key={o.id} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${isProfit?"rgba(0,212,170,0.2)":"rgba(255,71,87,0.2)"}`,borderRadius:12,padding:"12px 14px",marginBottom:8,borderRight:`3px solid ${isProfit?"#00d4aa":"#ff4757"}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <div>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontFamily:"monospace",fontWeight:800,fontSize:15}}>{o.symbol}</span>
-                      <span style={{fontSize:10,color:o.side==="buy"?"#00d4aa":"#ff4757",background:o.side==="buy"?"rgba(0,212,170,0.1)":"rgba(255,71,87,0.1)",padding:"2px 6px",borderRadius:20}}>
-                        {o.side==="buy"?"🟢 شراء":"🔴 بيع"}
-                      </span>
+                    <div style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{o.symbol}</div>
+                    <div style={{fontSize:10,color:"rgba(255,255,255,0.4)",marginTop:3}}>
+                      {o.qty} سهم · دخول ${fmt(pnl?.buyPrice)} · خروج ${fmt(o.filled_avg_price)}
                     </div>
-                    <div style={{fontSize:10,color:"rgba(255,255,255,0.4)",marginTop:4}}>{o.qty} سهم · ${fmt(o.filled_avg_price||o.limit_price||0)}</div>
-                    <div style={{fontSize:9,color:"rgba(255,255,255,0.2)",marginTop:2}}>{o.created_at?new Date(o.created_at).toLocaleString("ar-SA"):""}</div>
+                    <div style={{fontSize:9,color:"rgba(255,255,255,0.2)",marginTop:2}}>
+                      {o.filled_at?new Date(o.filled_at).toLocaleString("ar-SA"):""}
+                    </div>
                   </div>
-                  <div style={{textAlign:"left"}}>
-                    {pnl ? (
-                      <div>
-                        <div style={{fontSize:14,fontWeight:800,color:pnl.pl>=0?"#00d4aa":"#ff4757",fontFamily:"monospace"}}>{pnl.pl>=0?"+":""}${fmt(pnl.pl)}</div>
-                        <div style={{fontSize:11,color:pnl.pl>=0?"#00d4aa":"#ff4757",textAlign:"center"}}>{pct(pnl.plPct)}</div>
+                  {pnl && (
+                    <div style={{textAlign:"left"}}>
+                      <div style={{fontSize:16,fontWeight:900,color:isProfit?"#00d4aa":"#ff4757",fontFamily:"monospace"}}>
+                        {isProfit?"+":""}${fmt(pnl.pl)}
                       </div>
-                    ) : (
-                      <div style={{fontSize:10,fontWeight:700,color:o.status==="filled"?"#00d4aa":o.status==="canceled"?"#ff4757":"#fbbf24",background:o.status==="filled"?"rgba(0,212,170,0.1)":o.status==="canceled"?"rgba(255,71,87,0.1)":"rgba(251,191,36,0.1)",padding:"3px 8px",borderRadius:20}}>
-                        {o.status==="filled"?"✅ منفذ":o.status==="canceled"?"❌ ملغي":"⏳ "+o.status}
+                      <div style={{fontSize:12,color:isProfit?"#00d4aa":"#ff4757",textAlign:"center",fontWeight:700}}>
+                        {pct(pnl.plPct)}
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               </div>
             );
