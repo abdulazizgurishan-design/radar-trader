@@ -7,7 +7,8 @@ const POLYGON_KEY = process.env.NEXT_PUBLIC_POLYGON_KEY || "";
 
 const saveEquity = (equity) => {
   try {
-    const today = new Date().toLocaleDateString("en-CA");
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     const history = JSON.parse(localStorage.getItem("equityHistory")||"{}");
     history[today] = parseFloat(equity||0);
     const keys = Object.keys(history).sort();
