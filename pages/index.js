@@ -383,7 +383,7 @@ export default function App() {
                       {o.qty} سهم · دخول ${fmt(pnl?.buyPrice)} · خروج ${fmt(o.filled_avg_price)}
                     </div>
                     <div style={{fontSize:9,color:"rgba(255,255,255,0.2)",marginTop:2}}>
-                      {o.filled_at?new Date(o.filled_at).toLocaleString("ar-SA"):""}
+                      {o.filled_at?new Date(o.filled_at).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):""}
                     </div>
                   </div>
                   {pnl && (
