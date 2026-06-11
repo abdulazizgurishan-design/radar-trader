@@ -1,13 +1,9 @@
 {
   "framework": "nextjs",
   "crons": [
-    {
-      "path": "/api/trade",
-      "schedule": "40 13 * * 1-5"
-    },
-    {
-      "path": "/api/close",
-      "schedule": "0 17 * * 1-5"
-    }
+    { "path": "/api/trade", "schedule": "31 13 * * 1-5" },
+    { "path": "/api/trade", "schedule": "0 14 * * 1-5" },
+    { "path": "/api/trade", "schedule": "0 16 * * 1-5" },
+    { "path": "/api/close", "schedule": "0 17 * * 1-5" }
   ]
 }
