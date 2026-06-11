@@ -6,7 +6,7 @@ const ALPACA_BASE   = "https://paper-api.alpaca.markets";
 const STRATEGY = {
   minScore:     65,
   minChangePct: 1,
-  maxChangePct: 8,
+  maxChangePct: 30,
   minVolume:    100_000,
   maxTrades:    8,
 };
