@@ -1,5 +1,5 @@
-// v6 - with intraday stock chart per position
-import { useState, useEffect, useCallback } from "react";
+// v7 - with Performance tab (date filter + win/loss + profit totals)
+import { useState, useEffect, useCallback, useMemo } from "react";
 
 const fmt = (n) => parseFloat(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const pct = (n) => { const v=parseFloat(n||0); return (v>=0?"+":"")+v.toFixed(2)+"%"; };
@@ -110,7 +110,6 @@ const StockChart = ({ symbol, entryPrice }) => {
   const polyline = pts.join(" ");
   const lastPt = pts[pts.length-1].split(",");
 
-  // خط سعر الدخول
   const entryY = entryPrice ? H - pad - ((entryPrice-min)/range)*(H-pad*2) : null;
 
   return (
@@ -126,7 +125,6 @@ const StockChart = ({ symbol, entryPrice }) => {
           <line key={r} x1={pad} y1={pad+(1-r)*(H-pad*2)} x2={W-pad} y2={pad+(1-r)*(H-pad*2)}
             stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
         ))}
-        {/* خط سعر الدخول */}
         {entryY && entryY >= pad && entryY <= H-pad && (
           <line x1={pad} y1={entryY} x2={W-pad} y2={entryY}
             stroke="#fbbf24" strokeWidth="1" strokeDasharray="4,3"/>
@@ -168,8 +166,9 @@ export default function App() {
   const [ts,setTs]=useState(null);
   const [tab,setTab]=useState("dashboard");
   const [equityHist,setEquityHist]=useState({});
-  const [expandedPos,setExpandedPos]=useState(null); // السهم المفتوح شارته
-  const [closingPos,setClosingPos]=useState(null); // السهم الذي يتم إغلاقه
+  const [expandedPos,setExpandedPos]=useState(null);
+  const [closingPos,setClosingPos]=useState(null);
+  const [perfRange,setPerfRange]=useState("all"); // فلتر تاريخ الأداء
 
   const closeOne = async(symbol)=>{
     setClosingPos(symbol);
@@ -222,7 +221,6 @@ export default function App() {
   const ca=parseFloat(acc?.cash||0);
   const pl=eq-parseFloat(acc?.last_equity||0);
 
-  // حالة السوق
   const marketStatus = () => {
     const now = new Date();
     const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
@@ -242,12 +240,56 @@ export default function App() {
   const todayTotalPL = todayPnLList.reduce((sum,x)=>sum+x.pl, 0);
   const todayTotalPct = eq > 0 ? (todayTotalPL / (eq - todayTotalPL)) * 100 : 0;
 
+  // ═══ حساب الأداء حسب فلتر التاريخ ═══
+  const perf = useMemo(() => {
+    const now = Date.now();
+    const ranges = {
+      today: 1 * 86400000,
+      week:  7 * 86400000,
+      month: 30 * 86400000,
+      all:   Infinity,
+    };
+    const cutoff = ranges[perfRange] === Infinity ? 0 : now - ranges[perfRange];
+
+    // كل صفقات البيع المنفّذة ضمن الفترة
+    const closed = ord
+      .filter(o => o.side === "sell" && o.status === "filled" && o.filled_at)
+      .filter(o => new Date(o.filled_at).getTime() >= cutoff)
+      .map(o => ({ order: o, pnl: calcPnL(o, ord) }))
+      .filter(x => x.pnl);
+
+    const wins   = closed.filter(x => x.pnl.pl >= 0);
+    const losses = closed.filter(x => x.pnl.pl < 0);
+    const totalPL    = closed.reduce((s,x) => s + x.pnl.pl, 0);
+    const grossWin   = wins.reduce((s,x) => s + x.pnl.pl, 0);
+    const grossLoss  = losses.reduce((s,x) => s + x.pnl.pl, 0);
+    const winRate    = closed.length ? (wins.length / closed.length) * 100 : 0;
+    const avgWin     = wins.length ? grossWin / wins.length : 0;
+    const avgLoss    = losses.length ? grossLoss / losses.length : 0;
+    const bestTrade  = closed.length ? Math.max(...closed.map(x => x.pnl.pl)) : 0;
+    const worstTrade = closed.length ? Math.min(...closed.map(x => x.pnl.pl)) : 0;
+
+    return {
+      closed: closed.sort((a,b) => new Date(b.order.filled_at) - new Date(a.order.filled_at)),
+      total: closed.length, wins: wins.length, losses: losses.length,
+      totalPL, grossWin, grossLoss, winRate, avgWin, avgLoss, bestTrade, worstTrade,
+    };
+  }, [ord, perfRange]);
+
   const tabStyle = (t) => ({
     flex:1, padding:"10px 0", background:tab===t?"rgba(129,140,248,0.15)":"transparent",
     border:"none", color:tab===t?"#818cf8":"rgba(255,255,255,0.3)",
     fontWeight:tab===t?800:500, fontSize:13, cursor:"pointer",
     borderBottom:`2px solid ${tab===t?"#818cf8":"transparent"}`,
     transition:"all 0.2s"
+  });
+
+  const rangeBtn = (r, label) => ({
+    flex:1, padding:"8px 0", borderRadius:10,
+    background: perfRange===r ? "rgba(129,140,248,0.2)" : "rgba(255,255,255,0.03)",
+    border: `1px solid ${perfRange===r ? "rgba(129,140,248,0.4)" : "rgba(255,255,255,0.06)"}`,
+    color: perfRange===r ? "#a5b4fc" : "rgba(255,255,255,0.4)",
+    fontWeight: perfRange===r ? 700 : 500, fontSize:12, cursor:"pointer",
   });
 
   return (
@@ -263,6 +305,7 @@ export default function App() {
 
       <div style={{display:"flex",background:"rgba(255,255,255,0.03)",borderRadius:12,marginBottom:20,overflow:"hidden"}}>
         <button style={tabStyle("dashboard")} onClick={()=>setTab("dashboard")}>📊 الداشبورد</button>
+        <button style={tabStyle("performance")} onClick={()=>setTab("performance")}>📈 الأداء</button>
         <button style={tabStyle("history")} onClick={()=>setTab("history")}>📋 السجل</button>
       </div>
 
@@ -318,7 +361,6 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  {/* أزرار الشارت والإغلاق */}
                   <div style={{display:"flex",gap:8}}>
                     <button onClick={()=>setExpandedPos(isExpanded?null:p.symbol)} style={{flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,padding:"6px",color:"rgba(255,255,255,0.5)",fontSize:11,cursor:"pointer"}}>
                       {isExpanded?"▲ إخفاء":"📉 الشارت"}
@@ -334,8 +376,98 @@ export default function App() {
         </div>
       </>}
 
+      {/* ═══════════ تبويب الأداء ═══════════ */}
+      {tab==="performance" && <>
+        {/* فلتر التاريخ */}
+        <div style={{display:"flex",gap:8,marginBottom:18}}>
+          <button style={rangeBtn("today","اليوم")} onClick={()=>setPerfRange("today")}>اليوم</button>
+          <button style={rangeBtn("week","أسبوع")} onClick={()=>setPerfRange("week")}>أسبوع</button>
+          <button style={rangeBtn("month","شهر")} onClick={()=>setPerfRange("month")}>شهر</button>
+          <button style={rangeBtn("all","الكل")} onClick={()=>setPerfRange("all")}>الكل</button>
+        </div>
+
+        {/* البطل: صافي الربح */}
+        <div style={{textAlign:"center",padding:"24px 16px",background:`linear-gradient(160deg,${perf.totalPL>=0?"rgba(0,212,170,0.12)":"rgba(255,71,87,0.12)"},transparent)`,border:`1px solid ${perf.totalPL>=0?"rgba(0,212,170,0.3)":"rgba(255,71,87,0.3)"}`,borderRadius:20,marginBottom:16}}>
+          <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginBottom:6}}>صافي الربح/الخسارة</div>
+          <div style={{fontSize:42,fontWeight:900,color:perf.totalPL>=0?"#00d4aa":"#ff4757",fontFamily:"monospace",lineHeight:1,direction:"ltr"}}>
+            {perf.totalPL>=0?"+":""}${fmt(perf.totalPL)}
+          </div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginTop:8}}>
+            {perf.total} صفقة مغلقة · نسبة النجاح <span style={{color:perf.winRate>=50?"#00d4aa":"#fbbf24",fontWeight:700}}>{perf.winRate.toFixed(0)}%</span>
+          </div>
+        </div>
+
+        {/* صف الإحصائيات الأساسية */}
+        <div style={{display:"flex",gap:10,marginBottom:12}}>
+          {[
+            {l:"رابحة",v:perf.wins,c:"#00d4aa"},
+            {l:"خاسرة",v:perf.losses,c:"#ff4757"},
+            {l:"نسبة النجاح",v:`${perf.winRate.toFixed(0)}%`,c:"#818cf8"},
+          ].map(x=>(
+            <div key={x.l} style={{flex:1,background:`rgba(${x.c=="#00d4aa"?"0,212,170":x.c=="#818cf8"?"129,140,248":"255,71,87"},0.08)`,border:`1px solid ${x.c}33`,borderRadius:14,padding:"14px 8px",textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:900,color:x.c,fontFamily:"monospace"}}>{x.v}</div>
+              <div style={{fontSize:9,color:"rgba(255,255,255,0.3)",marginTop:3}}>{x.l}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* تفاصيل الأرباح والخسائر */}
+        <div style={{display:"flex",gap:10,marginBottom:12}}>
+          <div style={{flex:1,background:"rgba(0,212,170,0.06)",border:"1px solid rgba(0,212,170,0.2)",borderRadius:14,padding:"12px",direction:"ltr",textAlign:"center"}}>
+            <div style={{fontSize:9,color:"rgba(255,255,255,0.4)",marginBottom:4,direction:"rtl"}}>إجمالي الأرباح</div>
+            <div style={{fontSize:16,fontWeight:800,color:"#00d4aa",fontFamily:"monospace"}}>+${fmt(perf.grossWin)}</div>
+          </div>
+          <div style={{flex:1,background:"rgba(255,71,87,0.06)",border:"1px solid rgba(255,71,87,0.2)",borderRadius:14,padding:"12px",direction:"ltr",textAlign:"center"}}>
+            <div style={{fontSize:9,color:"rgba(255,255,255,0.4)",marginBottom:4,direction:"rtl"}}>إجمالي الخسائر</div>
+            <div style={{fontSize:16,fontWeight:800,color:"#ff4757",fontFamily:"monospace"}}>${fmt(perf.grossLoss)}</div>
+          </div>
+        </div>
+
+        {/* أفضل وأسوأ صفقة */}
+        <div style={{display:"flex",gap:10,marginBottom:20}}>
+          <div style={{flex:1,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"12px",direction:"ltr",textAlign:"center"}}>
+            <div style={{fontSize:9,color:"rgba(255,255,255,0.4)",marginBottom:4,direction:"rtl"}}>🏆 أفضل صفقة</div>
+            <div style={{fontSize:15,fontWeight:800,color:"#00d4aa",fontFamily:"monospace"}}>+${fmt(perf.bestTrade)}</div>
+          </div>
+          <div style={{flex:1,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"12px",direction:"ltr",textAlign:"center"}}>
+            <div style={{fontSize:9,color:"rgba(255,255,255,0.4)",marginBottom:4,direction:"rtl"}}>📉 أسوأ صفقة</div>
+            <div style={{fontSize:15,fontWeight:800,color:"#ff4757",fontFamily:"monospace"}}>${fmt(perf.worstTrade)}</div>
+          </div>
+        </div>
+
+        {/* قائمة الصفقات المغلقة في الفترة */}
+        <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:10}}>📋 صفقات الفترة ({perf.total})</div>
+        {perf.closed.length===0
+          ?<div style={{textAlign:"center",color:"rgba(255,255,255,0.2)",fontSize:12,padding:40,background:"rgba(255,255,255,0.02)",borderRadius:12}}>لا توجد صفقات مغلقة في هذه الفترة</div>
+          :perf.closed.map(({order:o,pnl})=>{
+            const isProfit = pnl.pl >= 0;
+            return (
+              <div key={o.id} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${isProfit?"rgba(0,212,170,0.2)":"rgba(255,71,87,0.2)"}`,borderRadius:12,padding:"12px 14px",marginBottom:8,borderRight:`3px solid ${isProfit?"#00d4aa":"#ff4757"}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div>
+                    <div style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{o.symbol}</div>
+                    <div style={{fontSize:10,color:"rgba(255,255,255,0.4)",marginTop:3,direction:"ltr",textAlign:"right"}}>
+                      {o.qty} × ${fmt(pnl.buyPrice)} → ${fmt(o.filled_avg_price)}
+                    </div>
+                    <div style={{fontSize:9,color:"rgba(255,255,255,0.2)",marginTop:2}}>
+                      {o.filled_at?new Date(o.filled_at).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):""}
+                    </div>
+                  </div>
+                  <div style={{textAlign:"left",direction:"ltr"}}>
+                    <div style={{fontSize:16,fontWeight:900,color:isProfit?"#00d4aa":"#ff4757",fontFamily:"monospace"}}>
+                      {isProfit?"+":""}${fmt(pnl.pl)}
+                    </div>
+                    <div style={{fontSize:12,color:isProfit?"#00d4aa":"#ff4757",fontWeight:700}}>
+                      {pct(pnl.plPct)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+      </>}
+
       {tab==="history" && <>
-        {/* ملخص الأرباح */}
         <div style={{display:"flex",gap:10,marginBottom:16}}>
           {[
             {l:"إجمالي البيع",v:ord.filter(o=>o.side==="sell"&&o.status==="filled").length,c:"#818cf8"},
@@ -367,7 +499,6 @@ export default function App() {
           </div>
         )}
 
-        {/* صفقات البيع المنفذة فقط */}
         <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:10}}>📋 سجل الصفقات</div>
         {ord.filter(o=>o.side==="sell"&&o.status==="filled").length===0
           ?<div style={{textAlign:"center",color:"rgba(255,255,255,0.2)",fontSize:12,padding:40,background:"rgba(255,255,255,0.02)",borderRadius:12}}>لا توجد صفقات مغلقة بعد</div>
