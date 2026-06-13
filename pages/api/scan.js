@@ -7,17 +7,18 @@
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.RADARAZ_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || process.env.RADARAZ_SUPABASE_KEY;
 
-const MIN_SCORE        = 70;     // الحد الأدنى للإشارة
+const MIN_SCORE        = 60;     // مخفف ليتطابق مع استراتيجية البوت
 const LOOKBACK_HOURS   = 6;      // آخر 6 ساعات
 const MAX_LEADERS      = 20;
 const MAX_SPECULATION  = 30;
 
 // ─── ساعات تشغيل البوت (بتوقيت ET) ─────────────────────────────
 // 9:30 AM ET (فتح السوق) = 4:30 PM الرياض
-// 1:00 PM ET (إيقاف فتح صفقات) = 8:00 PM الرياض
+// 3:45 PM ET (إيقاف فتح صفقات) = 10:45 PM الرياض
 const TRADING_START_HOUR_ET = 9;
 const TRADING_START_MIN_ET  = 30;
-const TRADING_END_HOUR_ET   = 13;
+const TRADING_END_HOUR_ET   = 15;
+const TRADING_END_MIN_ET    = 45;
 
 function isTradingWindow() {
   const now = new Date();
@@ -30,7 +31,7 @@ function isTradingWindow() {
 
   const minutesNow   = h * 60 + m;
   const minutesStart = TRADING_START_HOUR_ET * 60 + TRADING_START_MIN_ET;
-  const minutesEnd   = TRADING_END_HOUR_ET   * 60;
+  const minutesEnd   = TRADING_END_HOUR_ET   * 60 + TRADING_END_MIN_ET;
 
   return minutesNow >= minutesStart && minutesNow < minutesEnd;
 }
@@ -112,7 +113,10 @@ export default async function handler(req, res) {
         marketCap:  null,
         ema9:       null,
         ema20:      null,
-        rsi:        null,
+        rsi:        s.rsi ?? null,
+        ma_signal:  s.ma_signal || null,
+        atr14:      s.atr14 ?? null,
+        early_watch: s.early_watch || false,
         vwap:       null,
         rvol:       Number(s.rvol) || null,
         is_hot:     s.is_hot || false,
@@ -127,8 +131,9 @@ export default async function handler(req, res) {
       };
     });
 
-    // ─── 5. ترتيب: HOT أولاً ثم Score ────────────────────────
+    // ─── 5. ترتيب: رصد مبكر → HOT → Score ────────────────────
     formatted.sort((a, b) => {
+      if (!!b.early_watch !== !!a.early_watch) return b.early_watch ? 1 : -1;
       if (b.is_hot !== a.is_hot) return b.is_hot ? 1 : -1;
       return b.score - a.score;
     });
