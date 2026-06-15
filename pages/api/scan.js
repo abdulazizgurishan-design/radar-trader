@@ -109,7 +109,7 @@ export default async function handler(req, res) {
         rr,
         signal:     confidence,
         score,
-        type:       s.type === "قيادي" ? "قيادي" : "مضاربة",
+        type:       s.type === "استثمار" ? "استثمار" : "مضاربة",
         marketCap:  null,
         ema9:       null,
         ema20:      null,
@@ -138,8 +138,8 @@ export default async function handler(req, res) {
       return b.score - a.score;
     });
 
-    // ─── 6. تقسيم: قيادي / مضاربة ────────────────────────────
-    const leaders = formatted.filter(s => s.type === "قيادي").slice(0, MAX_LEADERS);
+    // ─── 6. تقسيم: استثمار / مضاربة ────────────────────────────
+    const leaders = formatted.filter(s => s.type === "استثمار").slice(0, MAX_LEADERS);
     const spec    = formatted.filter(s => s.type === "مضاربة").slice(0, MAX_SPECULATION);
     const all     = [...leaders, ...spec];
 
