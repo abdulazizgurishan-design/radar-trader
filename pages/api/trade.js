@@ -1,38 +1,38 @@
-// v6 — استراتيجية مطوّرة: رصد مبكر أولوية + RSI/MA + قيود مخففة
+// pages/api/trade.js — v7 (متوائم مع رادار محدّث)
+// ═══════════════════════════════════════════════════════════════════
+//  ✅ أولوية 🎯 الهدف ثم الرصد المبكر ثم التقاطع الذهبي ثم EP
+//  ✅ حد أدنى للسعر $3 (يتجنّب gaps أسهم البنسات)
+//  ✅ حجم مركز ~10% ثابت (اختبار عادل) + ميل بسيط للنخبة
+//  ✅ 5–6 صفقات بالتوازي (≈50–60% منتشرة، الباقي كاش)
+//  ✅ يرث أهداف/وقف الرادار (R:R مضبوطة) عبر bracket order
+// ═══════════════════════════════════════════════════════════════════
+
 const ALPACA_KEY    = process.env.ALPACA_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET;
 const ALPACA_BASE   = "https://paper-api.alpaca.markets";
 
 const STRATEGY = {
-  minScore:     60,        // مخفف من 65 (فرص أكثر)
+  minScore:     60,        // يطابق رادارك (يحفظ ≥60 بعد الفلترة)
+  minPrice:     3,         // 🆕 حد أدنى — يتجنّب gaps البنسات
   minChangePct: 1,
-  maxChangePct: 40,        // مرفوع من 30 (يسمح بزخم أقوى)
+  maxChangePct: 40,        // يطابق سقف الرادار
   minVolume:    100_000,
-  maxTrades:    8,
-  // فلاتر ذكية للجودة (بدل القيود العمياء)
-  maxRSI:       80,        // يتجنّب الإشباع الشرائي الشديد فقط
+  maxRSI:       78,        // يتجنّب الإشباع الشرائي الشديد
 };
 
-// ✅ نسبة المخاطرة حسب قوة الإشارة + أولوية الرصد المبكر
-const getRiskPct = (stock) => {
-  // 🔍 الرصد المبكر = أفضل نقطة دخول → مخاطرة أعلى (ثقة أكبر)
-  if (stock.early_watch) return 0.10;       // 10% — فرصة ذهبية مبكرة
-  const score = stock.score || 0;
-  if (score >= 85) return 0.08;             // 8% — إشارة قوية جداً
-  if (score >= 75) return 0.06;             // 6% — إشارة جيدة
-  return 0.05;                              // 5% — إشارة عادية
+// حجم المركز ~10% (ثابت للاختبار العادل) + ميل بسيط للقناعة الأعلى
+const getRiskPct = (s) => {
+  if (s.is_target)   return 0.12;   // 🎯 الهدف — أعلى قناعة
+  if (s.early_watch) return 0.11;   // 🔍 رصد مبكر
+  return 0.10;                      // الباقي — حجم ثابت
 };
 
-// ✅ عدد الصفقات حسب قوة السوق
+// 5–6 صفقات بالتوازي — حماية رأس المال (40%+ كاش دائماً)
 const getMaxTrades = (candidates) => {
-  if (candidates.length === 0) return 4;
-  const withVwap = candidates.filter(s => s.vwap);
-  if (withVwap.length === 0) return 6;       // مرفوع من 5 (قيود أخف)
-  const aboveVwap = withVwap.filter(s => s.price > s.vwap).length;
-  const ratio = aboveVwap / withVwap.length;
-  if (ratio >= 0.7) return 8; // سوق قوي
-  if (ratio >= 0.5) return 6; // سوق متوسط (مرفوع من 5)
-  return 4;                   // سوق ضعيف (مرفوع من 3)
+  if (!candidates.length) return 5;
+  const strong = candidates.filter(s => s.is_target || s.early_watch).length;
+  if (strong >= 3) return 6;   // فرص نخبة كثيرة
+  return 5;
 };
 
 const H = {
@@ -77,52 +77,41 @@ async function placeOrder({ symbol, qty, stopLoss, takeProfit }) {
 }
 
 export default async function handler(req, res) {
-  // يقبل GET (كرونات Vercel + المجدول الخارجي) و POST (يدوي)
-  // الكرونات تنادي بـ GET افتراضياً — رفضها كان يمنع كل الصفقات
-
   try {
-    // ─── 1. نافذة التداول: 9:30 ET - 3:45 PM ET (4:30م-10:45م الرياض) ───
+    // ─── 1. نافذة التداول: 9:30 ET - 3:45 PM ET ───
     const now = new Date();
     const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     const h   = et.getHours(), m = et.getMinutes(), day = et.getDay();
     const totalMins = h * 60 + m;
     const isWeekend = day === 0 || day === 6;
-    // 9:30 ET = 570 دقيقة | 3:45 PM ET = 945 دقيقة (نتوقف قبل الإغلاق بـ15د)
     const isMarketOpen = !isWeekend && totalMins >= 570 && totalMins < 945;
 
     if (!isMarketOpen) {
-      return res.status(200).json({
-        success: true,
-        message: "البوت يعمل 4:30م-10:45م الرياض (إثنين-جمعة)",
-        trades: []
-      });
+      return res.status(200).json({ success: true, message: "خارج ساعات التداول", trades: [] });
     }
 
-    // ─── 2. جلب الإشارات من scan (الذي يقرأ من Radaraz Supabase) ───
+    // ─── 2. جلب الإشارات من scan (يقرأ Radaraz Supabase) ───
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-    const scanRes = await fetch(`${baseUrl}/api/scan`);
+    const scanRes  = await fetch(`${baseUrl}/api/scan`);
     const scanData = await scanRes.json();
     const candidates = scanData.results ?? [];
 
-    // ─── 3. فلتر الإشارات (قيود مخففة + جودة ذكية) ──────────────
-    const marketMaxTrades = getMaxTrades(candidates);
-
+    // ─── 3. فلتر الجودة (متوائم مع الرادار) ───
     const filtered = candidates.filter(s => {
       if (s.score      < STRATEGY.minScore)     return false;
+      if (s.price      < STRATEGY.minPrice)     return false;   // 🆕 حد $3
       if (s.change_pct < STRATEGY.minChangePct) return false;
       if (s.change_pct > STRATEGY.maxChangePct) return false;
       if (s.volume     < STRATEGY.minVolume)    return false;
       if (!s.levels?.t1 || !s.levels?.sl)       return false;
-      // 📊 يتجنّب الإشباع الشرائي الشديد فقط (RSI > 80)
       if (s.rsi != null && s.rsi > STRATEGY.maxRSI) return false;
-      // VWAP اختياري
       if (s.vwap && s.price <= s.vwap)          return false;
       return true;
     });
 
-    // 🔍 أولوية الرصد المبكر — أفضل نقاط الدخول أولاً
-    // ثم تقاطع ذهبي، ثم EP الأعلى
+    // 🎯 أولوية: الهدف → رصد مبكر → تقاطع ذهبي → EP الأعلى
     filtered.sort((a, b) => {
+      if (!!b.is_target   !== !!a.is_target)   return b.is_target   ? 1 : -1;
       if (!!b.early_watch !== !!a.early_watch) return b.early_watch ? 1 : -1;
       const aGold = a.ma_signal === "تقاطع ذهبي 🌟" ? 1 : 0;
       const bGold = b.ma_signal === "تقاطع ذهبي 🌟" ? 1 : 0;
@@ -130,23 +119,17 @@ export default async function handler(req, res) {
       return (b.score || 0) - (a.score || 0);
     });
 
+    const marketMaxTrades = getMaxTrades(candidates);
+
     if (filtered.length === 0)
-      return res.status(200).json({
-        success: true,
-        message: `لا توجد فرص — قوة السوق: ${marketMaxTrades === 8 ? "🔥 قوي" : marketMaxTrades === 5 ? "😐 متوسط" : "⚠️ ضعيف"}`,
-        trades: []
-      });
+      return res.status(200).json({ success: true, message: "لا توجد فرص مطابقة", trades: [] });
 
     const [account, openPositions] = await Promise.all([getAccount(), getOpenPositions()]);
     const balance   = parseFloat(account.equity || account.cash || 0);
     const openCount = Array.isArray(openPositions) ? openPositions.length : 0;
 
     if (openCount >= marketMaxTrades)
-      return res.status(200).json({
-        success: true,
-        message: `وصلت الحد الأقصى (${marketMaxTrades} حسب قوة السوق)`,
-        trades: []
-      });
+      return res.status(200).json({ success: true, message: `وصلت الحد (${marketMaxTrades})`, trades: [] });
 
     const toTrade = filtered.slice(0, marketMaxTrades - openCount);
     const trades  = [];
@@ -154,27 +137,24 @@ export default async function handler(req, res) {
     for (const stock of toTrade) {
       if (await hasOpenPosition(stock.symbol)) continue;
 
-      // ✅ نسبة مخاطرة ديناميكية (الرصد المبكر أولوية)
       const riskPct = getRiskPct(stock);
       const qty = Math.floor((balance * riskPct) / stock.price);
       if (qty < 1) continue;
 
-      // ✅ T1 = الإغلاق التلقائي عند الهدف الأول
       const takeProfit = parseFloat(stock.levels.t1.toFixed(2));
       const stopLoss   = parseFloat(stock.levels.sl.toFixed(2));
 
-      // ✅ Bracket Order = إغلاق تلقائي عند T1 أو SL
       const order = await placeOrder({ symbol: stock.symbol, qty, stopLoss, takeProfit });
 
       trades.push({
         symbol:      stock.symbol,
         price:       stock.price,
         qty,
-        riskPct:     `${(riskPct*100).toFixed(0)}%`,
+        allocationPct: `${(riskPct * 100).toFixed(0)}%`,
         takeProfit,
         stopLoss,
         score:       stock.score,
-        is_hot:      stock.is_hot || false,
+        is_target:   stock.is_target || false,
         early_watch: stock.early_watch || false,
         ma_signal:   stock.ma_signal || null,
         rsi:         stock.rsi ?? null,
@@ -184,10 +164,10 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json({
-      success:        true,
+      success:      true,
       balance,
-      marketStrength: marketMaxTrades === 8 ? "🔥 قوي" : marketMaxTrades === 5 ? "😐 متوسط" : "⚠️ ضعيف",
-      tradesPlaced:   trades.length,
+      maxTrades:    marketMaxTrades,
+      tradesPlaced: trades.length,
       trades,
     });
 
