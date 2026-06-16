@@ -78,13 +78,14 @@ async function placeOrder({ symbol, qty, stopLoss, takeProfit }) {
 
 export default async function handler(req, res) {
   try {
-    // ─── 1. نافذة التداول: 9:30 ET - 3:45 PM ET ───
+    // ─── 1. نافذة التداول: 9:50 ET - 3:00 PM ET (4:50م-10:00م الرياض صيفاً) ───
     const now = new Date();
     const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     const h   = et.getHours(), m = et.getMinutes(), day = et.getDay();
     const totalMins = h * 60 + m;
     const isWeekend = day === 0 || day === 6;
-    const isMarketOpen = !isWeekend && totalMins >= 570 && totalMins < 945;
+    // 9:50 ET = 590 دقيقة (نتجنّب فوضى الافتتاح) | 3:00 PM ET = 900 (نوقف الدخول مبكراً قبل الإغلاق)
+    const isMarketOpen = !isWeekend && totalMins >= 590 && totalMins < 900;
 
     if (!isMarketOpen) {
       return res.status(200).json({ success: true, message: "خارج ساعات التداول", trades: [] });
