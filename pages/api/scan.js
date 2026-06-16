@@ -3,6 +3,7 @@
 //  ✅ يقرأ is_target (🎯 الهدف) ويعطيه الأولوية
 //  ✅ أصلح اسم حقل الأخبار: news_age_h (كان news_age_hours = فاضي)
 //  ✅ نافذة أحدث (3 ساعات) → السعر الحي ≈ سعر دخول الرادار
+//  ✅ نافذة التداول: 9:50ص–3:00م ET (4:50م–10:00م الرياض صيفاً)
 //  ✅ يطابق فلتر الرادار: score ≥ 60 (بعد فلترة الرادار المشدّدة)
 // ═══════════════════════════════════════════════════════════════════
 
@@ -14,8 +15,8 @@ const LOOKBACK_HOURS  = 3;      // 🆕 أحدث — يقلّل فجوة الس�
 const MAX_LEADERS     = 20;
 const MAX_SPECULATION = 30;
 
-const TRADING_START_HOUR_ET = 9,  TRADING_START_MIN_ET = 30;
-const TRADING_END_HOUR_ET   = 15, TRADING_END_MIN_ET   = 45;
+const TRADING_START_HOUR_ET = 9,  TRADING_START_MIN_ET = 50;
+const TRADING_END_HOUR_ET   = 15, TRADING_END_MIN_ET   = 0;
 
 function isTradingWindow() {
   const now = new Date();
