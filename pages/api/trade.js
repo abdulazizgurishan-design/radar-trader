@@ -18,6 +18,7 @@ const STRATEGY = {
   maxChangePct: 40,        // يطابق سقف الرادار
   minVolume:    100_000,
   maxRSI:       78,        // يتجنّب الإشباع الشرائي الشديد
+  skipChasers:  true,      // 🆕 يتجاوز إشارات «ملاحقة/غير مؤكد» و«هابط» من البنية (متوائم مع radaraz)
 };
 
 // حجم المركز ~10% (ثابت للاختبار العادل) + ميل بسيط للقناعة الأعلى
@@ -107,12 +108,19 @@ export default async function handler(req, res) {
       if (!s.levels?.t1 || !s.levels?.sl)       return false;
       if (s.rsi != null && s.rsi > STRATEGY.maxRSI) return false;
       if (s.vwap && s.price <= s.vwap)          return false;
+      // 🆕 فلتر البنية: يتجاوز الملاحقة/الهابط (يتداول الجواهر فقط مثل radaraz)
+      if (STRATEGY.skipChasers && s.structure && typeof s.structure.flag === "string") {
+        const f = s.structure.flag;
+        if (f.indexOf("ملاحقة") >= 0 || f.indexOf("غير مؤكد") >= 0 || f.indexOf("هابط") >= 0) return false;
+      }
       return true;
     });
 
-    // 🎯 أولوية: الهدف → رصد مبكر → تقاطع ذهبي → EP الأعلى
+    // 🎯 أولوية: الهدف → دخول صحيح (بنية) → رصد مبكر → تقاطع ذهبي → EP الأعلى
+    const validEntry = x => x.structure && typeof x.structure.flag === "string" && x.structure.flag.indexOf("صحيح") >= 0;
     filtered.sort((a, b) => {
       if (!!b.is_target   !== !!a.is_target)   return b.is_target   ? 1 : -1;
+      if (validEntry(b)   !== validEntry(a))   return validEntry(b) ? 1 : -1;
       if (!!b.early_watch !== !!a.early_watch) return b.early_watch ? 1 : -1;
       const aGold = a.ma_signal === "تقاطع ذهبي 🌟" ? 1 : 0;
       const bGold = b.ma_signal === "تقاطع ذهبي 🌟" ? 1 : 0;
