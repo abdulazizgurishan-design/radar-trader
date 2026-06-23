@@ -18,20 +18,23 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_AN
 
 const STRATEGY = {
   engine: "smart",          // "smart" = الإدارة الكاملة | "simple" = دخول فقط بلا إدارة
-  addEnabled: true,         // C) الدخول المتدرّج
+  addEnabled: true,         // C) الدخول المتدرّج (يخفّض المتوسط فيُلمس TP1 أسهل)
 
   minScore: 60, minPrice: 3, minChangePct: 1, maxChangePct: 40,
   minVolume: 100_000, maxRSI: 78, skipChasers: true,
-  minRR: 1.3, entryBuffer: 1.02,
+  minRR: 1.3,
+  entryBuffer: 1.01,        // مكافحة الملاحقة: لا ندخل فوق التأكيد بأكثر من 1%
+  minRoomPct: 0.015,        // لا بد من مسافة ربح ≥1.5% حتى TP1 (وإلا لا فائدة)
 
   riskPerTradePct: 0.015,   // مخاطرة 1.5% من الحساب/صفقة (سعر→وقف)
   maxPositionPct:  0.22,    // سقف المركز الواحد
   minPositionPct:  0.04,    // أرضية المركز
   maxDeployedPct:  0.85,    // أقصى انتشار (يبقي ~15% كاش)
 
-  initialFraction: 0.60,    // ندخل 60% أولاً، نحجز 40% للإضافة
-  tp1Fraction:     0.667,   // نبيع 2/3 عند T1
-  breakevenAfterTp1: true,  // ننقل الوقف للتعادل بعد T1
+  initialFraction: 0.60,    // ندخل 60% أولاً، نحجز 40% للإضافة عند التراجع
+  tp1Fraction:     1.0,     // 🆕 خروج كامل عند TP1 (المقاومة) — أعلى احتمال نجاح
+  tp1FillNudge:    0.998,   // 🆕 نضع TP1 داخل المقاومة 0.2% ليملأ قبل الزحام
+  breakevenAfterTp1: true,  // (غير مؤثّر مع الخروج الكامل — يبقى للتوافق)
   maxTrades: 6,
 };
 
@@ -62,19 +65,11 @@ async function ocoSell(sym, qty, tp, sl) {
   return r.json();
 }
 
-// يضع حماية الكمية الحالية حسب الحالة (قبل/بعد T1)
+// يضع حماية كامل الكمية: خروج كامل عند TP1 (المقاومة) بوقف البنية الذكي
 async function placeExits(sym, qty, p) {
-  if (p.tp1_done) {
-    // الباقي (الراكض): هدف T3 ووقف عند التعادل
-    const stop = STRATEGY.breakevenAfterTp1 ? Number(p.avg_entry) : Number(p.stop);
-    await ocoSell(sym, qty, Number(p.t3), stop);
-  } else {
-    // قبل T1: قسمين — 2/3 إلى T1 و 1/3 إلى T3، كلاهما بوقف البنية
-    const tp1q = Math.floor(qty * STRATEGY.tp1Fraction);
-    const tp3q = qty - tp1q;
-    if (tp1q > 0) await ocoSell(sym, tp1q, Number(p.t1), Number(p.stop));
-    if (tp3q > 0) await ocoSell(sym, tp3q, Number(p.t3), Number(p.stop));
-  }
+  const raw = Number(p.t1) * STRATEGY.tp1FillNudge;   // داخل المقاومة بقليل ليملأ
+  const t1px = +raw.toFixed(Number(p.t1) < 1 ? 4 : 2);
+  await ocoSell(sym, qty, t1px, Number(p.stop));
 }
 
 // ───────── Supabase (جدول الخطط) ─────────
@@ -91,12 +86,16 @@ async function planClose(sym) {
   });
 }
 
-// منطقة دخول مناسبة (مثل لمبة الرادار)
-function suitableEntry(st, price, minRR, buffer) {
-  if (!st || !price) return false;
-  return price > st.support && price <= st.confirm * buffer &&
-         st.rr != null && st.rr >= minRR &&
-         st.stop != null && st.stop < price && st.t1 != null && st.t1 > price;
+// منطقة دخول مناسبة (مثل لمبة الرادار) — تعتمد المستويات الواقعية من الماسح
+function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
+  if (!st || !price || !t1 || !stopPx) return false;
+  const risk = price - stopPx;
+  if (risk <= 0) return false;
+  const rr = (t1 - price) / risk;
+  return price > st.support &&            // فوق الارتكاز
+         price <= st.confirm * buffer &&  // غير ملاحق (قرب/تحت التأكيد)
+         t1 >= price * (1 + minRoom) &&    // مسافة ربح كافية حتى TP1
+         rr >= minRR;                      // عائد/مخاطرة مجزٍ
 }
 
 export default async function handler(req, res) {
@@ -211,10 +210,16 @@ export default async function handler(req, res) {
         const live = await getLatestPrice(s.symbol);
         const px = live || s.price;
 
-        if (!suitableEntry(st, px, STRATEGY.minRR, STRATEGY.entryBuffer)) {
-          log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول", px: +px.toFixed(2), confirm: st.confirm }); continue;
+        // 🆕 المستويات الواقعية/الذكية من الماسح (نفس ما يعرضه الرادار):
+        //    TP1 = هدف واقعي (مقاومة قريبة أو ATR)، الوقف = الوقف الذكي المحسوب.
+        const t1     = Number(s.target1   != null ? s.target1   : st.t1);
+        const stopPx = Number(s.stop_loss != null ? s.stop_loss : st.stop);
+        const t3     = Number(s.target3   != null ? s.target3   : st.t3);
+
+        if (!suitableEntry(st, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
+          log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول / R:R ضعيف", px: +px.toFixed(2), confirm: st.confirm }); continue;
         }
-        const riskPerShare = px - st.stop;
+        const riskPerShare = px - stopPx;
         if (riskPerShare <= 0) { log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" }); continue; }
 
         let fullValue = (balance * STRATEGY.riskPerTradePct) * px / riskPerShare;
@@ -233,14 +238,14 @@ export default async function handler(req, res) {
         const plan = {
           symbol: s.symbol, status: "active",
           initial_qty: initialQty, add_qty: addQty, added: false, add_enabled: STRATEGY.addEnabled && addQty > 0,
-          total_qty: initialQty, avg_entry: px, add_level: st.entry, stop: st.stop, t1: st.t1, t3: st.t3,
+          total_qty: initialQty, avg_entry: px, add_level: st.entry, stop: stopPx, t1: t1, t3: t3,
           support: st.support, confirm: st.confirm, tp1_done: false, be_moved: false,
         };
-        await placeExits(s.symbol, initialQty, plan);   // OCO: 2/3→T1, 1/3→T3 بوقف البنية
+        await placeExits(s.symbol, initialQty, plan);   // OCO: خروج كامل عند TP1 بوقف ذكي
         await planSave(plan);
 
         deployed += initialQty * px; openCount++; openSymbols.add(s.symbol);
-        log.entered.push({ symbol: s.symbol, px: +px.toFixed(2), initialQty, reserveAdd: addQty, stop: st.stop, t1: st.t1, t3: st.t3, rr: st.rr });
+        log.entered.push({ symbol: s.symbol, px: +px.toFixed(2), initialQty, reserveAdd: addQty, stop: +stopPx.toFixed(2), tp1: +t1.toFixed(2), exit: "full@TP1", rr: +((t1 - px) / (px - stopPx)).toFixed(2) });
       }
     }
 
