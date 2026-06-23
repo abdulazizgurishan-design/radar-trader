@@ -38,12 +38,14 @@ export default async function handler(req, res) {
       });
     }
 
-    // اجلب إشارات Radaraz (آخر 3 ساعات، score ≥ 60)
-    const sinceISO = new Date(Date.now() - LOOKBACK_HOURS * 3600 * 1000).toISOString();
+    // اجلب كل إشارات اليوم (score ≥ الحد) — نعتمد على فحص السعر الحيّ في البوت لمنع الملاحقة.
+    //   (created_at يتجمّد عند أول رصد، فنافذة الساعات كانت تُخفي إشارات اليوم الصالحة → صفقات قليلة)
+    const todayET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }))
+      .toISOString().split("T")[0];
     const url = `${SUPABASE_URL}/rest/v1/signals`
       + `?select=*`
       + `&score=gte.${MIN_SCORE}`
-      + `&created_at=gte.${sinceISO}`
+      + `&signal_date=eq.${todayET}`
       + `&order=score.desc`
       + `&limit=100`;
 
