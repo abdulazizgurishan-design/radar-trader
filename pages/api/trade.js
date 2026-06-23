@@ -20,7 +20,7 @@ const STRATEGY = {
   engine: "smart",          // "smart" = الإدارة الكاملة | "simple" = دخول فقط بلا إدارة
   addEnabled: true,         // C) الدخول المتدرّج (يخفّض المتوسط فيُلمس TP1 أسهل)
 
-  minScore: 60, minPrice: 3, minChangePct: 1, maxChangePct: 40,
+  minScore: 65, minPrice: 3, minChangePct: 1, maxChangePct: 40,   // رُفع 60→65: البوت يتداول الأنظف فقط
   minVolume: 100_000, maxRSI: 78, skipChasers: true,
   minRR: 1.3,
   entryBuffer: 1.01,        // مكافحة الملاحقة: لا ندخل فوق التأكيد بأكثر من 1%
@@ -101,6 +101,7 @@ function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
 export default async function handler(req, res) {
   try {
     const log = { managed: [], entered: [], skipped: [] };
+    const debug = { phase: "manage_only" };
     const now = new Date();
     const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     const mins = et.getHours() * 60 + et.getMinutes(), day = et.getDay();
@@ -169,9 +170,18 @@ export default async function handler(req, res) {
 
     // ═══ المرحلة 2: دخول صفقات جديدة ═══
     if (canEnter) {
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-      const scanData = await (await fetch(`${baseUrl}/api/scan`)).json();
-      const candidates = scanData.results ?? [];
+      // نقرأ إشارات اليوم المحفوظة (سريع) بدل مسح حيّ ثقيل يستهلك مهلة الدالة (Hobby 10ث).
+      //   البوت يتحقق من السعر الحيّ لكل سهم قبل الدخول، فلا حاجة للمسح اللحظي هنا.
+      const todayET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }))
+        .toISOString().split("T")[0];
+      let candidates = [];
+      try {
+        const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&order=score.desc&limit=100`, { headers: SB_H });
+        if (sr.ok) {
+          const rows = await sr.json();
+          candidates = (Array.isArray(rows) ? rows : []).map(r => ({ ...r, price: r.entry_price }));
+        }
+      } catch { /* تجاهل — نكتفي بالإدارة */ }
 
       const filtered = candidates.filter(s => {
         if (s.score < STRATEGY.minScore) return false;
@@ -247,11 +257,25 @@ export default async function handler(req, res) {
         deployed += initialQty * px; openCount++; openSymbols.add(s.symbol);
         log.entered.push({ symbol: s.symbol, px: +px.toFixed(2), initialQty, reserveAdd: addQty, stop: +stopPx.toFixed(2), tp1: +t1.toFixed(2), exit: "full@TP1", rr: +((t1 - px) / (px - stopPx)).toFixed(2) });
       }
+
+      // 📊 Telemetry — ليش دخل/ما دخل (قمع البوت): مرشحون → بعد الفلتر → الأسباب
+      const skipTally = {};
+      for (const sk of log.skipped) skipTally[sk.reason] = (skipTally[sk.reason] || 0) + 1;
+      debug.phase = "enter";
+      debug.candidates = candidates.length;
+      debug.after_filter = filtered.length;
+      debug.open_before = openSymbols.size - log.entered.length;
+      debug.max_trades = STRATEGY.maxTrades;
+      debug.entered = log.entered.length;
+      debug.skipped = log.skipped.length;
+      debug.skip_reasons = skipTally;
+      debug.deployed_pct = balance > 0 ? Math.round((deployed / balance) * 100) : 0;
     }
 
     return res.status(200).json({
       success: true, engine: STRATEGY.engine,
       time_et: `${et.getHours()}:${String(et.getMinutes()).padStart(2, "0")}`,
+      debug,
       ...log,
     });
   } catch (e) {
