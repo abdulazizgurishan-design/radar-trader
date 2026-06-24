@@ -51,6 +51,35 @@ async function cancelOrder(id)     { try { await fetch(`${ALPACA_BASE}/v2/orders
 async function cancelAll(sym)      { const oo = await getOpenOrders(sym); for (const o of oo) await cancelOrder(o.id); }
 async function buyMarket(sym, qty) { const r = await fetch(`${ALPACA_BASE}/v2/orders`, { method: "POST", headers: H, body: JSON.stringify({ symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day" }) }); return r.json(); }
 
+// 🆕 شراء براكِت ذرّي: دخول + هدف + وقف في أمر واحد.
+//    مستحيل يبقى مركز بلا حماية — Alpaca تضمن تفعيل الوقف/الهدف فور تنفيذ الشراء.
+//    يحلّ كارثة "مركز مفتوح بلا وقف" (سبب خسائر -19%).
+async function buyBracket(sym, qty, tp, sl) {
+  const dec = (Number(tp) < 1 || Number(sl) < 1) ? 4 : 2;
+  const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
+    method: "POST", headers: H,
+    body: JSON.stringify({
+      symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day",
+      order_class: "bracket",
+      take_profit: { limit_price: Number(tp).toFixed(dec) },
+      stop_loss:   { stop_price:  Number(sl).toFixed(dec) },
+    }),
+  });
+  return r.json();
+}
+
+// بيع وقف بسيط (شبكة أمان أخيرة لو فشل OCO/البراكِت) — الحماية أهم من الهدف
+async function stopSell(sym, qty, sl) {
+  try {
+    const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
+      method: "POST", headers: H,
+      body: JSON.stringify({ symbol: sym, qty: String(qty), side: "sell", type: "stop",
+        stop_price: Number(sl).toFixed(Number(sl) < 1 ? 4 : 2), time_in_force: "day" }),
+    });
+    return r.json();
+  } catch { return null; }
+}
+
 // OCO بيع: هدف (limit) + وقف (stop) مرتبطان — أيّهما تحقّق يلغي الآخر
 async function ocoSell(sym, qty, tp, sl) {
   const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
@@ -66,10 +95,17 @@ async function ocoSell(sym, qty, tp, sl) {
 }
 
 // يضع حماية كامل الكمية: خروج كامل عند TP1 (المقاومة) بوقف البنية الذكي
+// 🆕 مُحصّن: يتحقّق من نجاح OCO، وإن فشل يضع وقفاً بسيطاً (لا يترك المركز عارياً أبداً)
 async function placeExits(sym, qty, p) {
   const raw = Number(p.t1) * STRATEGY.tp1FillNudge;   // داخل المقاومة بقليل ليملأ
   const t1px = +raw.toFixed(Number(p.t1) < 1 ? 4 : 2);
-  await ocoSell(sym, qty, t1px, Number(p.stop));
+  const resp = await ocoSell(sym, qty, t1px, Number(p.stop));
+  if (resp && (resp.code || resp.status === "rejected")) {
+    // فشل OCO → شبكة أمان: وقف بسيط يضمن الحماية (نضحّي بالهدف مقابل عدم ترك المركز بلا وقف)
+    await stopSell(sym, qty, Number(p.stop));
+    return { ok: false, fallback: true };
+  }
+  return { ok: true };
 }
 
 // ───────── Supabase (جدول الخطط) ─────────
@@ -242,8 +278,13 @@ export default async function handler(req, res) {
         const initialQty = Math.max(1, Math.floor(fullQty * STRATEGY.initialFraction));
         const addQty = fullQty - initialQty;
 
-        const buy = await buyMarket(s.symbol, initialQty);
-        if (buy.status === "rejected" || buy.code) { log.skipped.push({ symbol: s.symbol, reason: "رُفض الشراء", err: buy.message || null }); continue; }
+        // 🆕 شراء براكِت ذرّي: الدخول + الهدف + الوقف معاً. الوقف مضمون من لحظة التنفيذ.
+        const t1px = +(Number(t1) * STRATEGY.tp1FillNudge).toFixed(Number(t1) < 1 ? 4 : 2);
+        const buy = await buyBracket(s.symbol, initialQty, t1px, stopPx);
+        if (buy.status === "rejected" || buy.code) {
+          // فشل البراكِت (سعر/حد) → لا ندخل أبداً بلا حماية. نتخطّى بدل المخاطرة بمركز عارٍ.
+          log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت (لا دخول بلا وقف)", err: buy.message || null }); continue;
+        }
 
         const plan = {
           symbol: s.symbol, status: "active",
@@ -251,11 +292,11 @@ export default async function handler(req, res) {
           total_qty: initialQty, avg_entry: px, add_level: st.entry, stop: stopPx, t1: t1, t3: t3,
           support: st.support, confirm: st.confirm, tp1_done: false, be_moved: false,
         };
-        await placeExits(s.symbol, initialQty, plan);   // OCO: خروج كامل عند TP1 بوقف ذكي
+        // البراكِت وضع الحماية ذرّياً — لا حاجة لـ placeExits منفصل هنا (يمنع أمراً مكرراً)
         await planSave(plan);
 
         deployed += initialQty * px; openCount++; openSymbols.add(s.symbol);
-        log.entered.push({ symbol: s.symbol, px: +px.toFixed(2), initialQty, reserveAdd: addQty, stop: +stopPx.toFixed(2), tp1: +t1.toFixed(2), exit: "full@TP1", rr: +((t1 - px) / (px - stopPx)).toFixed(2) });
+        log.entered.push({ symbol: s.symbol, px: +px.toFixed(2), initialQty, reserveAdd: addQty, stop: +stopPx.toFixed(2), tp1: +t1.toFixed(2), exit: "bracket@TP1", rr: +((t1 - px) / (px - stopPx)).toFixed(2) });
       }
 
       // 📊 Telemetry — ليش دخل/ما دخل (قمع البوت): مرشحون → بعد الفلتر → الأسباب
