@@ -26,6 +26,7 @@ const STRATEGY = {
   entryBuffer: 1.01,        // مكافحة الملاحقة: لا ندخل فوق التأكيد بأكثر من 1%
   minRoomPct: 0.015,        // لا بد من مسافة ربح ≥1.5% حتى TP1 (وإلا لا فائدة)
 
+  maxLossPct:      0.07,    // 🆕 سقف خسارة صارم 7% — أي وقف بنيوي أبعد يُقصّ لهذا الحد (يحمي من الوقف البعيد مثل ANY ‑56%)
   riskPerTradePct: 0.015,   // مخاطرة 1.5% من الحساب/صفقة (سعر→وقف)
   maxPositionPct:  0.22,    // سقف المركز الواحد
   minPositionPct:  0.04,    // أرضية المركز
@@ -259,8 +260,13 @@ export default async function handler(req, res) {
         // 🆕 المستويات الواقعية/الذكية من الماسح (نفس ما يعرضه الرادار):
         //    TP1 = هدف واقعي (مقاومة قريبة أو ATR)، الوقف = الوقف الذكي المحسوب.
         const t1     = Number(s.target1   != null ? s.target1   : st.t1);
-        const stopPx = Number(s.stop_loss != null ? s.stop_loss : st.stop);
+        let   stopPx = Number(s.stop_loss != null ? s.stop_loss : st.stop);
         const t3     = Number(s.target3   != null ? s.target3   : st.t3);
+
+        // 🆕 سقف خسارة صارم 7%: لو الوقف البنيوي أبعد من 7% تحت السعر الحيّ، نرفعه لحد 7%.
+        //    يحمي من الكوارث (ANY: وقف بنيوي ‑56%). الوقف الأقرب = خسارة أصغر.
+        const capFloor = px * (1 - STRATEGY.maxLossPct);
+        if (stopPx < capFloor) stopPx = capFloor;
 
         if (!suitableEntry(st, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
           log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول / R:R ضعيف", px: +px.toFixed(2), confirm: st.confirm }); continue;
