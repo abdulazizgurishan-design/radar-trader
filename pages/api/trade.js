@@ -33,9 +33,14 @@ const STRATEGY = {
   maxDeployedPct:  0.85,    // أقصى انتشار (يبقي ~15% كاش)
 
   initialFraction: 0.60,    // ندخل 60% أولاً، نحجز 40% للإضافة عند التراجع
-  tp1Fraction:     1.0,     // 🆕 خروج كامل عند TP1 (المقاومة) — أعلى احتمال نجاح
+  tp1Fraction:     1.0,     // (للتوافق — يُتجاوز بالخروج المتدرّج أدناه)
   tp1FillNudge:    0.998,   // 🆕 نضع TP1 داخل المقاومة 0.2% ليملأ قبل الزحام
   breakevenAfterTp1: true,  // (غير مؤثّر مع الخروج الكامل — يبقى للتوافق)
+
+  // 🆕 الخروج المتدرّج حسب نوع السهم — يحجز ربحاً مبكراً ويطلّع الباقي مع trailing
+  tieredExit: true,
+  scalpT1Sell:  0.50,       // مضاربة: بِع 50% عند T1 (احجز ربح) + طلّع 50% بالـtrailing
+  investT1Sell: 0.33,       // استثمار: بِع 33% عند T1 (صبر أطول للباقي — حركته أبطأ)
 
   // 🆕 المتداول الذكي البنيوي — Trailing Stop بمراحل (يحمي الربح المتراكم)
   trailEnabled: true,
@@ -192,7 +197,33 @@ export default async function handler(req, res) {
           }
         }
 
-        // B) كشف تنفيذ T1 (بِيع ~2/3 والسعر فوق التعادل) → نقل الوقف للتعادل
+        // 🆕 الخروج المتدرّج: السعر بلغ T1 ولم نَجنِ بعد → بِع نسبة (50% مضاربة/33% استثمار)
+        //    والباقي يبقى بوقف للتعادل + trailing (يطلّع مع الحركة الكبيرة).
+        if (STRATEGY.tieredExit && !p.tp1_done && live && Number(p.t1) > 0 &&
+            live >= Number(p.t1) * STRATEGY.tp1FillNudge && held >= 2) {
+          const sellFrac = Number(p.t1_sell_frac) || STRATEGY.scalpT1Sell;
+          const sellQty = Math.max(1, Math.floor(held * sellFrac));
+          const keepQty = held - sellQty;
+          await cancelAll(sym);
+          // بِع جزء السوق فوراً (احجز الربح)
+          const sellResp = await fetch(`${ALPACA_BASE}/v2/orders`, {
+            method: "POST", headers: H,
+            body: JSON.stringify({ symbol: sym, qty: String(sellQty), side: "sell", type: "market", time_in_force: "day" }),
+          }).then(r => r.json()).catch(() => null);
+          p.tp1_done = true;
+          p.stop = +Number(p.avg_entry).toFixed(Number(p.avg_entry) < 1 ? 4 : 2);  // الباقي: وقف للتعادل
+          if (keepQty >= 1) {
+            // الباقي: هدف T3 + وقف تعادل (OCO)، يطلّع مع trailing لاحقاً
+            const t3px = +(Number(p.t3) || live * 1.5).toFixed(Number(live) < 1 ? 4 : 2);
+            let ok = await ocoSell(sym, keepQty, t3px, p.stop);
+            if (!ok || ok.code) { await stopSell(sym, keepQty, p.stop); }
+          }
+          await planSave(p);
+          log.managed.push({ symbol: sym, action: `جني ${Math.round(sellFrac*100)}% عند T1 + الباقي بوقف تعادل`, sold: sellQty, kept: keepQty, type: p.stock_type });
+          continue;
+        }
+
+        // B) كشف تنفيذ T1 عبر الأوامر (احتياطي للبراكِت القديم) → نقل الوقف للتعادل
         const tp1q = Math.floor(Number(p.total_qty) * STRATEGY.tp1Fraction);
         const remain = Number(p.total_qty) - tp1q;
         if (!p.tp1_done && held <= remain && held < Number(p.total_qty) && live && live > Number(p.avg_entry)) {
@@ -320,9 +351,13 @@ export default async function handler(req, res) {
         const initialQty = Math.max(1, Math.floor(fullQty * STRATEGY.initialFraction));
         const addQty = fullQty - initialQty;
 
-        // 🆕 شراء براكِت ذرّي: الدخول + الهدف + الوقف معاً. الوقف مضمون من لحظة التنفيذ.
-        const t1px = +(Number(t1) * STRATEGY.tp1FillNudge).toFixed(Number(t1) < 1 ? 4 : 2);
-        const buy = await buyBracket(s.symbol, initialQty, t1px, stopPx);
+        // 🆕 شراء براكِت ذرّي: الدخول + الوقف معاً (الوقف مضمون من لحظة التنفيذ).
+        //    الهدف في البراكِت = T3 (هدف بعيد) كي لا يبيع الكل عند T1 — الإدارة المتدرّجة
+        //    تتولّى البيع الجزئي عند T1 ثم trailing للباقي.
+        const brTp = STRATEGY.tieredExit
+          ? +(Number(t3) || Number(t1) * 1.2).toFixed(Number(t3) < 1 ? 4 : 2)
+          : +(Number(t1) * STRATEGY.tp1FillNudge).toFixed(Number(t1) < 1 ? 4 : 2);
+        const buy = await buyBracket(s.symbol, initialQty, brTp, stopPx);
         if (buy.status === "rejected" || buy.code) {
           // فشل البراكِت (سعر/حد) → لا ندخل أبداً بلا حماية. نتخطّى بدل المخاطرة بمركز عارٍ.
           log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت (لا دخول بلا وقف)", err: buy.message || null }); continue;
@@ -333,6 +368,9 @@ export default async function handler(req, res) {
           initial_qty: initialQty, add_qty: addQty, added: false, add_enabled: STRATEGY.addEnabled && addQty > 0,
           total_qty: initialQty, avg_entry: px, add_level: st.entry, stop: stopPx, t1: t1, t3: t3,
           support: st.support, confirm: st.confirm, tp1_done: false, be_moved: false,
+          // 🆕 نوع السهم + نسبة البيع عند T1 (للخروج المتدرّج)
+          stock_type: s.type || "مضاربة",
+          t1_sell_frac: (s.type === "استثمار") ? STRATEGY.investT1Sell : STRATEGY.scalpT1Sell,
         };
         // البراكِت وضع الحماية ذرّياً — لا حاجة لـ placeExits منفصل هنا (يمنع أمراً مكرراً)
         await planSave(plan);
