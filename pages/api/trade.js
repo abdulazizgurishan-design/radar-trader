@@ -36,6 +36,16 @@ const STRATEGY = {
   tp1Fraction:     1.0,     // 🆕 خروج كامل عند TP1 (المقاومة) — أعلى احتمال نجاح
   tp1FillNudge:    0.998,   // 🆕 نضع TP1 داخل المقاومة 0.2% ليملأ قبل الزحام
   breakevenAfterTp1: true,  // (غير مؤثّر مع الخروج الكامل — يبقى للتوافق)
+
+  // 🆕 المتداول الذكي البنيوي — Trailing Stop بمراحل (يحمي الربح المتراكم)
+  trailEnabled: true,
+  trailTiers: [             // عند بلوغ ربح gain%، ارفع الوقف ليحمي lock% من الدخول
+    { gain: 0.03, lock: 0.00 },   // +3% ربح → الوقف للتعادل (خسارة صفر)
+    { gain: 0.06, lock: 0.03 },   // +6% → احمِ +3%
+    { gain: 0.10, lock: 0.06 },   // +10% → احمِ +6%
+    { gain: 0.15, lock: 0.10 },   // +15% → احمِ +10%
+    { gain: 0.22, lock: 0.15 },   // +22% → احمِ +15%
+  ],
   maxTrades: 6,
 };
 
@@ -192,6 +202,32 @@ export default async function handler(req, res) {
           await planSave(p);
           log.managed.push({ symbol: sym, action: "جني T1 + وقف تعادل", remaining: held, stop: STRATEGY.breakevenAfterTp1 ? +Number(p.avg_entry).toFixed(2) : Number(p.stop) });
           continue;
+        }
+
+        // 🆕 Trailing Stop بمراحل — يرفع الوقف مع صعود السهم (يحمي الربح المتراكم)
+        if (STRATEGY.trailEnabled && live && Number(p.avg_entry) > 0) {
+          const gain = (live - Number(p.avg_entry)) / Number(p.avg_entry);
+          // أعلى مرحلة بلغها الربح
+          let newLock = null;
+          for (const tier of STRATEGY.trailTiers) {
+            if (gain >= tier.gain) newLock = tier.lock;
+          }
+          if (newLock != null) {
+            const newStop = +(Number(p.avg_entry) * (1 + newLock)).toFixed(Number(p.avg_entry) < 1 ? 4 : 2);
+            const curStop = Number(p.stop) || 0;
+            // نرفع الوقف فقط (لا ننزله أبداً)، وبفارق ملموس يتجاوز ضجيج صغير
+            if (newStop > curStop && newStop < live) {
+              await cancelAll(sym);
+              const t3px = +(Number(p.t3) || live * 1.5).toFixed(Number(live) < 1 ? 4 : 2);
+              // هدف بعيد (T3) + وقف مرفوع — أيّهما تحقّق يلغي الآخر
+              let ok = await ocoSell(sym, held, t3px, newStop);
+              if (!ok || ok.code) { await stopSell(sym, held, newStop); }  // fallback: وقف على الأقل
+              p.stop = newStop; p.trail_lock = newLock;
+              await planSave(p);
+              log.managed.push({ symbol: sym, action: "🔼 رفع الوقف (trailing)", gainPct: +(gain*100).toFixed(1), newStop, protects: `+${(newLock*100).toFixed(0)}%` });
+              continue;
+            }
+          }
         }
 
         // إصلاح ذاتي: مركز مفتوح بلا أوامر حماية → أعد وضعها
