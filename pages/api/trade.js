@@ -27,6 +27,7 @@ const STRATEGY = {
   minRoomPct: 0.015,        // لا بد من مسافة ربح ≥1.5% حتى TP1 (وإلا لا فائدة)
 
   maxLossPct:      0.07,    // 🆕 سقف خسارة صارم 7% — أي وقف بنيوي أبعد يُقصّ لهذا الحد (يحمي من الوقف البعيد مثل ANY ‑56%)
+  maxDriftPct:     0.03,    // 🆕 أقصى انحراف عن سعر الرادار 3% — فوقه = دخول متأخر، نرفض
   riskPerTradePct: 0.015,   // مخاطرة 1.5% من الحساب/صفقة (سعر→وقف)
   maxPositionPct:  0.22,    // سقف المركز الواحد
   minPositionPct:  0.04,    // أرضية المركز
@@ -323,20 +324,53 @@ export default async function handler(req, res) {
         const st = s.structure;
         const live = await getLatestPrice(s.symbol);
         const px = live || s.price;
+        if (!px) { log.skipped.push({ symbol: s.symbol, reason: "لا يوجد سعر" }); continue; }
 
-        // 🆕 المستويات الواقعية/الذكية من الماسح (نفس ما يعرضه الرادار):
-        //    TP1 = هدف واقعي (مقاومة قريبة أو ATR)، الوقف = الوقف الذكي المحسوب.
-        const t1     = Number(s.target1   != null ? s.target1   : st.t1);
-        let   stopPx = Number(s.stop_loss != null ? s.stop_loss : st.stop);
-        const t3     = Number(s.target3   != null ? s.target3   : st.t3);
+        // 🆕 فلتر الانحراف (Drift): الرادار رصد السهم بسعر قديم؛ لو طار >3% عنه،
+        //    الدخول الآن = دخول متأخر (R:R منهار). نرفض بدل ما نخسر.
+        const radarPx = Number(s.price) || px;
+        const driftPct = ((px - radarPx) / radarPx) * 100;
+        if (driftPct > STRATEGY.maxDriftPct * 100) {
+          log.skipped.push({ symbol: s.symbol, reason: `سعر متأخر ${driftPct.toFixed(1)}% (رادار ${radarPx} → حي ${px.toFixed(2)})` });
+          continue;
+        }
 
-        // 🆕 سقف خسارة صارم 7%: لو الوقف البنيوي أبعد من 7% تحت السعر الحيّ، نرفعه لحد 7%.
-        //    يحمي من الكوارث (ANY: وقف بنيوي ‑56%). الوقف الأقرب = خسارة أصغر.
+        // 🆕 إعادة حساب المستويات بذكاء (مو ratio خطي):
+        //    • الدعم/المقاومة = مستويات بنيوية ثابتة (لا تتحرك بحركة السعر — هي أسعار تاريخية).
+        //    • الوقف = تحت الدعم الحقيقي مباشرة (مو الوقف القديم × نسبة).
+        //    • الأهداف = تتناسب جزئياً مع حركة السعر (المقاومة تتحرك أبطأ من السعر).
+        const support  = Number(st.support != null ? st.support : radarPx * 0.97);
+        const confirm  = Number(st.confirm != null ? st.confirm : radarPx);
+        // الأهداف: لو السعر تحرّك، نحرّك الهدف بنفس فرق السعر المطلق (يحافظ على المسافة الواقعية)
+        const priceShift = px - radarPx;
+        const t1     = Number(s.target1   != null ? s.target1   : st.t1) + priceShift;
+        const t3     = Number(s.target3   != null ? s.target3   : st.t3) + priceShift;
+        // الوقف = تحت الدعم الحقيقي بهامش بسيط (مو الوقف القديم × نسبة)
+        let   stopPx = support > 0 && support < px ? support * 0.995
+                     : Number(s.stop_loss != null ? s.stop_loss : st.stop);
+
+        // 🆕 رفض لو ضرب الوقف قبل الدخول (السعر الحي تحت الوقف = صفقة خاسرة أصلاً)
+        if (stopPx > 0 && px <= stopPx) {
+          log.skipped.push({ symbol: s.symbol, reason: `ضرب الوقف (${stopPx.toFixed(2)}) قبل الدخول` });
+          continue;
+        }
+
+        // 🆕 سقف خسارة صارم 7%: لو الوقف أبعد من 7% تحت السعر الحيّ، نرفعه لحد 7%.
         const capFloor = px * (1 - STRATEGY.maxLossPct);
         if (stopPx < capFloor) stopPx = capFloor;
 
-        if (!suitableEntry(st, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
-          log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول / R:R ضعيف", px: +px.toFixed(2), confirm: st.confirm }); continue;
+        // 🆕 إعادة فحص R:R بالقيم المعاد حسابها (يرفض الدخول المتأخر بهدف قريب/وقف بعيد)
+        const rrLive = (px - stopPx) > 0 ? (t1 - px) / (px - stopPx) : 0;
+        if (rrLive < STRATEGY.minRR) {
+          log.skipped.push({ symbol: s.symbol, reason: `R:R ${rrLive.toFixed(1)} بعد إعادة الحساب`, px: +px.toFixed(2) });
+          continue;
+        }
+
+        // البنية المعاد حسابها — كل الحقول محدّثة (support/confirm للـsuitableEntry والإدارة)
+        const stLive = { ...st, support, confirm, t1, stop: stopPx, t3, rr: +rrLive.toFixed(2), entry: px };
+
+        if (!suitableEntry(stLive, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
+          log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول / R:R ضعيف", px: +px.toFixed(2), confirm: +confirm.toFixed(2) }); continue;
         }
         const riskPerShare = px - stopPx;
         if (riskPerShare <= 0) { log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" }); continue; }
@@ -366,8 +400,8 @@ export default async function handler(req, res) {
         const plan = {
           symbol: s.symbol, status: "active",
           initial_qty: initialQty, add_qty: addQty, added: false, add_enabled: STRATEGY.addEnabled && addQty > 0,
-          total_qty: initialQty, avg_entry: px, add_level: st.entry, stop: stopPx, t1: t1, t3: t3,
-          support: st.support, confirm: st.confirm, tp1_done: false, be_moved: false,
+          total_qty: initialQty, avg_entry: px, add_level: (support + px) / 2, stop: stopPx, t1: t1, t3: t3,
+          support: support, confirm: confirm, tp1_done: false, be_moved: false,
           // 🆕 نوع السهم + نسبة البيع عند T1 (للخروج المتدرّج)
           stock_type: s.type || "مضاربة",
           t1_sell_frac: (s.type === "استثمار") ? STRATEGY.investT1Sell : STRATEGY.scalpT1Sell,
