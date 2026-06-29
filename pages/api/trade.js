@@ -20,7 +20,7 @@ const STRATEGY = {
   engine: "smart",          // "smart" = الإدارة الكاملة | "simple" = دخول فقط بلا إدارة
   addEnabled: true,         // C) الدخول المتدرّج (يخفّض المتوسط فيُلمس TP1 أسهل)
 
-  minScore: 65, minPrice: 3, minChangePct: 1, maxChangePct: 40,   // رُفع 60→65: البوت يتداول الأنظف فقط
+  minScore: 65, minPrice: 8, minChangePct: 1, maxChangePct: 40,   // 🆕 رُفع minPrice 3→8: الأسهم الرخيصة (<$8) متقلّبة وتتجاوز الوقف بقفزات (مثل WNW ‑13%)
   minVolume: 100_000, maxRSI: 78, skipChasers: true,
   minRR: 1.3,
   entryBuffer: 1.01,        // مكافحة الملاحقة: لا ندخل فوق التأكيد بأكثر من 1%
