@@ -1,12 +1,11 @@
-// pages/api/trade.js — v10 (SNIPER STRATEGY + MOMENTUM)
+// pages/api/trade.js — v11 (MONEY MACHINE 💰)
 // ════════════════════════════════════════════════════════════════════════
-//  ✅ استراتيجية "الصياد" — صفقات زخم سريعة (30 دقيقة - 3 ساعات)
-//  ✅ كشف الزخم: RSI 50-65 + RVOL ≥ 4 + حجم كبير
-//  ✅ تقاطع MA9/MA21 على شمعة ساعة (تقاطع طازج)
-//  ✅ وقف صارم 4% — حماية رأس المال
-//  ✅ هدف سريع T1: +3.5%, T2: +6%
-//  ✅ تصنيف الصفقات: SNIPER 🎯 في السجلات
-//  ✅ إدارة مخاطر منفصلة للصياد (أكثر صرامة)
+//  ✅ خفض minScore: 65 → 55 (إشارات أكثر)
+//  ✅ خفض minRR: 1.3 → 1.0 (مخاطرة مقبولة)
+//  ✅ رفع maxDriftPct: 3% → 5% (يسمح بأسهم تحركت أكثر)
+//  ✅ خفض minPrice: 8 → 3 (أسهم أرخص = فرص أكثر)
+//  ✅ خفض maxRSI: 78 → 75 (جودة أعلى)
+//  ✅ الهدف: 10-15 صفقة يومياً
 // ════════════════════════════════════════════════════════════════════════
 
 const ALPACA_KEY    = process.env.ALPACA_KEY;
@@ -21,21 +20,21 @@ const STRATEGY = {
   engine: "smart",
   addEnabled: true,
 
-  // ─── الإعدادات الأساسية ──────────────────────────────────────
-  minScore: 65,
-  minPrice: 8,
+  // ─── الإعدادات الأساسية (معدلة) ────────────────────────────
+  minScore: 55,              // 65 → 55 (إشارات أكثر)
+  minPrice: 3,               // 8 → 3 (أسهم أرخص)
   minChangePct: 1,
   maxChangePct: 40,
   minVolume: 100_000,
-  maxRSI: 78,
+  maxRSI: 75,                // 78 → 75 (جودة أعلى)
   skipChasers: true,
-  minRR: 1.3,
+  minRR: 1.0,                // 1.3 → 1.0 (مخاطرة مقبولة)
   entryBuffer: 1.01,
   minRoomPct: 0.015,
 
   // ─── إدارة المخاطر ──────────────────────────────────────────
   maxLossPct: 0.07,
-  maxDriftPct: 0.03,
+  maxDriftPct: 0.05,         // 0.03 → 0.05 (يسمح بأسهم تحركت أكثر)
   riskPerTradePct: 0.015,
   maxPositionPct: 0.28,
   minPositionPct: 0.04,
@@ -57,33 +56,26 @@ const STRATEGY = {
     { gain: 0.15, lock: 0.10 },
     { gain: 0.22, lock: 0.15 },
   ],
-  maxTrades: 6,
+  maxTrades: 8,              // 6 → 8 (صفقات أكثر)
 
-  // ─── 🆕 استراتيجية الصياد (SNIPER) ──────────────────────────
+  // ─── استراتيجية الصياد (SNIPER) ────────────────────────────
   sniperEnabled: true,
   sniper: {
-    // شروط الزخم
-    minScore: 72,              // جودة عالية جداً
-    minRvol: 4,                // زخم حجم قوي (≥4x)
-    minRSI: 50,                // زخم صحي (ليس مشبع)
-    maxRSI: 65,                // ليس مشبعاً شرائياً
-    minChange: 2,              // حركة صاعدة خفيفة
-    maxChange: 15,             // لا نطارد الأسهم المرتفعة جداً
-    minVolume: 500_000,        // سيولة عالية
-    
-    // الأهداف والوقف (أكثر صرامة)
-    stopLoss: 0.04,            // وقف 4% فقط
-    target1: 0.035,            // هدف أول +3.5%
-    target2: 0.06,             // هدف ثانٍ +6%
-    
-    // إدارة المخاطر (أكثر صرامة)
-    riskPerTrade: 0.01,        // مخاطرة 1% فقط (بدل 1.5%)
-    maxPosition: 0.12,         // سقف 12% من الحساب
-    
-    // المتطلبات
-    maxTrades: 4,              // صفقات قليلة جداً (جودة عالية)
-    requireCross: true,        // يتطلب تقاطع MA9>MA21
-    requireVCP: false,         // VCP اختياري
+    minScore: 68,
+    minRvol: 4,
+    minRSI: 50,
+    maxRSI: 65,
+    minChange: 2,
+    maxChange: 15,
+    minVolume: 500_000,
+    stopLoss: 0.04,
+    target1: 0.035,
+    target2: 0.06,
+    riskPerTrade: 0.01,
+    maxPosition: 0.12,
+    maxTrades: 4,
+    requireCross: true,
+    requireVCP: false,
   },
 };
 
@@ -163,14 +155,13 @@ async function planClose(sym) {
   });
 }
 
-// ───────── حساب SMA (للكشف عن التقاطع) ─────────
+// ───────── حساب SMA ─────────
 function calcSMA(prices, period) {
   if (!prices || prices.length < period) return null;
   const slice = prices.slice(-period);
   return slice.reduce((a, b) => a + b, 0) / period;
 }
 
-// 🆕 كشف التقاطع الطازج MA9 > MA21
 function isFreshCross(closes, fast = 9, slow = 21) {
   if (!closes || closes.length < slow + 2) return false;
   const fastMA = calcSMA(closes, fast);
@@ -181,7 +172,6 @@ function isFreshCross(closes, fast = 9, slow = 21) {
   return fastPrev <= slowPrev && fastMA > slowMA;
 }
 
-// 🆕 جلب شموع ساعة للكشف عن التقاطع
 async function fetchHourlyBars(symbol) {
   try {
     const to = new Date().toISOString().slice(0, 10);
@@ -358,7 +348,6 @@ export default async function handler(req, res) {
       let deployed = positions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
       const maxDeployed = balance * STRATEGY.maxDeployedPct;
 
-      // ─── حلقة الدخول ──────────────────────────────────────────
       for (const s of filtered) {
         if (openCount >= STRATEGY.maxTrades) break;
         if (openSymbols.has(s.symbol)) continue;
@@ -375,7 +364,6 @@ export default async function handler(req, res) {
         let sniperRisk = STRATEGY.riskPerTradePct;
 
         if (STRATEGY.sniperEnabled) {
-          // 1) جلب شموع ساعة للكشف عن التقاطع
           let freshCross = false;
           try {
             const hourlyBars = await fetchHourlyBars(s.symbol);
@@ -385,7 +373,6 @@ export default async function handler(req, res) {
             }
           } catch { /* تجاهل */ }
 
-          // 2) التحقق من شروط الصياد
           const sniperConditions = {
             score: s.score >= STRATEGY.sniper.minScore,
             rvol: s.rvol >= STRATEGY.sniper.minRvol,
@@ -399,12 +386,9 @@ export default async function handler(req, res) {
 
           if (allConditions) {
             isSniper = true;
-            // وقف صارم 4%
             sniperStopPx = px * (1 - STRATEGY.sniper.stopLoss);
-            // أهداف سريعة
             sniperT1 = px * (1 + STRATEGY.sniper.target1);
             sniperT2 = px * (1 + STRATEGY.sniper.target2);
-            // مخاطرة أقل 1%
             sniperRisk = STRATEGY.sniper.riskPerTrade;
             log.sniper.push({ symbol: s.symbol, score: s.score, rvol: s.rvol, rsi: s.rsi, cross: freshCross });
           }
@@ -417,7 +401,6 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // إعادة حساب المستويات
         const support  = Number(st.support != null ? st.support : radarPx * 0.97);
         const confirm  = Number(st.confirm != null ? st.confirm : radarPx);
         const priceShift = px - radarPx;
@@ -426,13 +409,9 @@ export default async function handler(req, res) {
         let stopPx = support > 0 && support < px ? support * 0.995
                    : Number(s.stop_loss != null ? s.stop_loss : st.stop);
 
-        // 🆕 إذا كان صياداً، استخدم وقف وأهداف الصياد
         if (isSniper) {
-          // استخدم وقف الصياد (أكثر صرامة)
           if (sniperStopPx > stopPx) stopPx = sniperStopPx;
-          // استخدم أهداف الصياد (T1, T2)
           t1 = sniperT1;
-          // T3 = T2 (نفس الهدف للصفقات السريعة)
           t3 = sniperT2;
         }
 
@@ -460,7 +439,6 @@ export default async function handler(req, res) {
         const riskPerShare = px - stopPx;
         if (riskPerShare <= 0) { log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" }); continue; }
 
-        // 🆕 تحجيم ذكي مع دعم الصياد
         let qualityMult = 1.0;
         const sc = Number(s.score) || 60;
         if (sc >= 85) qualityMult = 1.6;
@@ -469,17 +447,12 @@ export default async function handler(req, res) {
         else qualityMult = 0.85;
         if (s.vcp) qualityMult += 0.15;
         if (s.fresh_zone) qualityMult += 0.10;
-        
-        // 🆕 مضاعف الصياد (حجم أكبر للصفقات السريعة)
         if (isSniper) qualityMult *= 1.1;
 
         let fullValue = (balance * (isSniper ? sniperRisk : STRATEGY.riskPerTradePct)) * px / riskPerShare;
         fullValue = fullValue * qualityMult;
-        
-        // 🆕 سقف أقل للصياد (حماية)
         const maxPosPct = isSniper ? STRATEGY.sniper.maxPosition : STRATEGY.maxPositionPct;
         fullValue = Math.min(fullValue, balance * maxPosPct);
-        
         if (fullValue < balance * STRATEGY.minPositionPct) { log.skipped.push({ symbol: s.symbol, reason: "تحت أرضية المركز" }); continue; }
         if (deployed + fullValue > maxDeployed) { log.skipped.push({ symbol: s.symbol, reason: "بلغ سقف الانتشار" }); break; }
 
@@ -488,13 +461,11 @@ export default async function handler(req, res) {
         const initialQty = Math.max(1, Math.floor(fullQty * STRATEGY.initialFraction));
         const addQty = fullQty - initialQty;
 
-        // شراء
         const brTp = isSniper
-          ? +(t3 || t1 * 1.05).toFixed(Number(t3) < 1 ? 4 : 2)  // للصياد: هدف قريب
+          ? +(t3 || t1 * 1.05).toFixed(Number(t3) < 1 ? 4 : 2)
           : STRATEGY.tieredExit
           ? +(Number(t3) || Number(t1) * 1.2).toFixed(Number(t3) < 1 ? 4 : 2)
           : +(Number(t1) * STRATEGY.tp1FillNudge).toFixed(Number(t1) < 1 ? 4 : 2);
-        
         const buy = await buyBracket(s.symbol, initialQty, brTp, stopPx);
         if (buy.status === "rejected" || buy.code) {
           log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت", err: buy.message || null });
