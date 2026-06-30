@@ -29,7 +29,7 @@ const STRATEGY = {
   maxLossPct:      0.07,    // 🆕 سقف خسارة صارم 7% — أي وقف بنيوي أبعد يُقصّ لهذا الحد (يحمي من الوقف البعيد مثل ANY ‑56%)
   maxDriftPct:     0.03,    // 🆕 أقصى انحراف عن سعر الرادار 3% — فوقه = دخول متأخر، نرفض
   riskPerTradePct: 0.015,   // مخاطرة 1.5% من الحساب/صفقة (سعر→وقف)
-  maxPositionPct:  0.22,    // سقف المركز الواحد
+  maxPositionPct:  0.28,    // سقف المركز الواحد (28% — يسمح للفرص الاستثنائية بحجم أكبر، يبقى آمناً تحت 30%)
   minPositionPct:  0.04,    // أرضية المركز
   maxDeployedPct:  0.85,    // أقصى انتشار (يبقي ~15% كاش)
 
@@ -375,8 +375,21 @@ export default async function handler(req, res) {
         const riskPerShare = px - stopPx;
         if (riskPerShare <= 0) { log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" }); continue; }
 
+        // 🆕 تحجيم ذكي حسب جودة الفرصة: كل ما كانت الإشارة أقوى (سكور + VCP + Fresh Zone)
+        //    زاد حجم المركز — ضمن السقف الآمن (لا نخاطر بأكثر من maxPositionPct مهما كانت قوية).
+        //    فرصة استثنائية تأخذ حجماً أكبر، عادية تأخذ أصغر = ثقة محسوبة، لا مقامرة.
+        let qualityMult = 1.0;
+        const sc = Number(s.score) || 60;
+        if (sc >= 85) qualityMult = 1.6;        // استثنائية
+        else if (sc >= 75) qualityMult = 1.35;  // ممتازة
+        else if (sc >= 68) qualityMult = 1.15;  // جيدة جداً
+        else qualityMult = 0.85;                 // عادية (حجم أصغر)
+        if (s.vcp) qualityMult += 0.15;          // انكماش تذبذب = جودة أعلى
+        if (s.fresh_zone) qualityMult += 0.10;   // دعم طازج = جودة أعلى
+
         let fullValue = (balance * STRATEGY.riskPerTradePct) * px / riskPerShare;
-        fullValue = Math.min(fullValue, balance * STRATEGY.maxPositionPct);
+        fullValue = fullValue * qualityMult;     // 🆕 يتضخّم/ينكمش حسب الجودة
+        fullValue = Math.min(fullValue, balance * STRATEGY.maxPositionPct);   // السقف الآمن يحمي دائماً
         if (fullValue < balance * STRATEGY.minPositionPct) { log.skipped.push({ symbol: s.symbol, reason: "تحت أرضية المركز" }); continue; }
         if (deployed + fullValue > maxDeployed) { log.skipped.push({ symbol: s.symbol, reason: "بلغ سقف الانتشار" }); break; }
 
