@@ -1,11 +1,12 @@
-// pages/api/trade.js — v9 (محرك إدارة ذكي: دخول متدرّج + خروج متدرّج + تعادل)
+// pages/api/trade.js — v10 (SNIPER STRATEGY + MOMENTUM)
 // ════════════════════════════════════════════════════════════════════════
-//  B) خروج متدرّج: بيع 2/3 عند T1 → نقل الوقف للتعادل، والباقي 1/3 إلى T3
-//  C) دخول متدرّج: ندخل 60% أولاً، ونضيف 40% فقط لو نزل لمستوى الدخول (فوق الوقف)
-//  • الوقف/الأهداف من بنية السوق • الحجم حسب المخاطرة (~1.5%/صفقة)
-//  • حالة كل مركز محفوظة في Supabase (جدول bot_positions)
-//  • أوامر OCO (هدف+وقف مرتبطين) — تنفيذ لحظي بلا تعارض حجز الأسهم
-//  ⚠️ بيتا — اختبر على الورقي وراقب أول صفقات. للإيقاف: STRATEGY.engine="simple"
+//  ✅ استراتيجية "الصياد" — صفقات زخم سريعة (30 دقيقة - 3 ساعات)
+//  ✅ كشف الزخم: RSI 50-65 + RVOL ≥ 4 + حجم كبير
+//  ✅ تقاطع MA9/MA21 على شمعة ساعة (تقاطع طازج)
+//  ✅ وقف صارم 4% — حماية رأس المال
+//  ✅ هدف سريع T1: +3.5%, T2: +6%
+//  ✅ تصنيف الصفقات: SNIPER 🎯 في السجلات
+//  ✅ إدارة مخاطر منفصلة للصياد (أكثر صرامة)
 // ════════════════════════════════════════════════════════════════════════
 
 const ALPACA_KEY    = process.env.ALPACA_KEY;
@@ -17,42 +18,73 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.RADARAZ_SUPABASE_KEY;
 
 const STRATEGY = {
-  engine: "smart",          // "smart" = الإدارة الكاملة | "simple" = دخول فقط بلا إدارة
-  addEnabled: true,         // C) الدخول المتدرّج (يخفّض المتوسط فيُلمس TP1 أسهل)
+  engine: "smart",
+  addEnabled: true,
 
-  minScore: 65, minPrice: 8, minChangePct: 1, maxChangePct: 40,   // 🆕 رُفع minPrice 3→8: الأسهم الرخيصة (<$8) متقلّبة وتتجاوز الوقف بقفزات (مثل WNW ‑13%)
-  minVolume: 100_000, maxRSI: 78, skipChasers: true,
+  // ─── الإعدادات الأساسية ──────────────────────────────────────
+  minScore: 65,
+  minPrice: 8,
+  minChangePct: 1,
+  maxChangePct: 40,
+  minVolume: 100_000,
+  maxRSI: 78,
+  skipChasers: true,
   minRR: 1.3,
-  entryBuffer: 1.01,        // مكافحة الملاحقة: لا ندخل فوق التأكيد بأكثر من 1%
-  minRoomPct: 0.015,        // لا بد من مسافة ربح ≥1.5% حتى TP1 (وإلا لا فائدة)
+  entryBuffer: 1.01,
+  minRoomPct: 0.015,
 
-  maxLossPct:      0.07,    // 🆕 سقف خسارة صارم 7% — أي وقف بنيوي أبعد يُقصّ لهذا الحد (يحمي من الوقف البعيد مثل ANY ‑56%)
-  maxDriftPct:     0.03,    // 🆕 أقصى انحراف عن سعر الرادار 3% — فوقه = دخول متأخر، نرفض
-  riskPerTradePct: 0.015,   // مخاطرة 1.5% من الحساب/صفقة (سعر→وقف)
-  maxPositionPct:  0.28,    // سقف المركز الواحد (28% — يسمح للفرص الاستثنائية بحجم أكبر، يبقى آمناً تحت 30%)
-  minPositionPct:  0.04,    // أرضية المركز
-  maxDeployedPct:  0.85,    // أقصى انتشار (يبقي ~15% كاش)
+  // ─── إدارة المخاطر ──────────────────────────────────────────
+  maxLossPct: 0.07,
+  maxDriftPct: 0.03,
+  riskPerTradePct: 0.015,
+  maxPositionPct: 0.28,
+  minPositionPct: 0.04,
+  maxDeployedPct: 0.85,
 
-  initialFraction: 0.60,    // ندخل 60% أولاً، نحجز 40% للإضافة عند التراجع
-  tp1Fraction:     1.0,     // (للتوافق — يُتجاوز بالخروج المتدرّج أدناه)
-  tp1FillNudge:    0.998,   // 🆕 نضع TP1 داخل المقاومة 0.2% ليملأ قبل الزحام
-  breakevenAfterTp1: true,  // (غير مؤثّر مع الخروج الكامل — يبقى للتوافق)
-
-  // 🆕 الخروج المتدرّج حسب نوع السهم — يحجز ربحاً مبكراً ويطلّع الباقي مع trailing
+  // ─── الدخول/الخروج ──────────────────────────────────────────
+  initialFraction: 0.60,
+  tp1Fraction: 1.0,
+  tp1FillNudge: 0.998,
+  breakevenAfterTp1: true,
   tieredExit: true,
-  scalpT1Sell:  0.50,       // مضاربة: بِع 50% عند T1 (احجز ربح) + طلّع 50% بالـtrailing
-  investT1Sell: 0.33,       // استثمار: بِع 33% عند T1 (صبر أطول للباقي — حركته أبطأ)
-
-  // 🆕 المتداول الذكي البنيوي — Trailing Stop بمراحل (يحمي الربح المتراكم)
+  scalpT1Sell: 0.50,
+  investT1Sell: 0.33,
   trailEnabled: true,
-  trailTiers: [             // عند بلوغ ربح gain%، ارفع الوقف ليحمي lock% من الدخول
-    { gain: 0.03, lock: 0.00 },   // +3% ربح → الوقف للتعادل (خسارة صفر)
-    { gain: 0.06, lock: 0.03 },   // +6% → احمِ +3%
-    { gain: 0.10, lock: 0.06 },   // +10% → احمِ +6%
-    { gain: 0.15, lock: 0.10 },   // +15% → احمِ +10%
-    { gain: 0.22, lock: 0.15 },   // +22% → احمِ +15%
+  trailTiers: [
+    { gain: 0.03, lock: 0.00 },
+    { gain: 0.06, lock: 0.03 },
+    { gain: 0.10, lock: 0.06 },
+    { gain: 0.15, lock: 0.10 },
+    { gain: 0.22, lock: 0.15 },
   ],
   maxTrades: 6,
+
+  // ─── 🆕 استراتيجية الصياد (SNIPER) ──────────────────────────
+  sniperEnabled: true,
+  sniper: {
+    // شروط الزخم
+    minScore: 72,              // جودة عالية جداً
+    minRvol: 4,                // زخم حجم قوي (≥4x)
+    minRSI: 50,                // زخم صحي (ليس مشبع)
+    maxRSI: 65,                // ليس مشبعاً شرائياً
+    minChange: 2,              // حركة صاعدة خفيفة
+    maxChange: 15,             // لا نطارد الأسهم المرتفعة جداً
+    minVolume: 500_000,        // سيولة عالية
+    
+    // الأهداف والوقف (أكثر صرامة)
+    stopLoss: 0.04,            // وقف 4% فقط
+    target1: 0.035,            // هدف أول +3.5%
+    target2: 0.06,             // هدف ثانٍ +6%
+    
+    // إدارة المخاطر (أكثر صرامة)
+    riskPerTrade: 0.01,        // مخاطرة 1% فقط (بدل 1.5%)
+    maxPosition: 0.12,         // سقف 12% من الحساب
+    
+    // المتطلبات
+    maxTrades: 4,              // صفقات قليلة جداً (جودة عالية)
+    requireCross: true,        // يتطلب تقاطع MA9>MA21
+    requireVCP: false,         // VCP اختياري
+  },
 };
 
 const H    = { "APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET, "Content-Type": "application/json" };
@@ -68,9 +100,6 @@ async function cancelOrder(id)     { try { await fetch(`${ALPACA_BASE}/v2/orders
 async function cancelAll(sym)      { const oo = await getOpenOrders(sym); for (const o of oo) await cancelOrder(o.id); }
 async function buyMarket(sym, qty) { const r = await fetch(`${ALPACA_BASE}/v2/orders`, { method: "POST", headers: H, body: JSON.stringify({ symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day" }) }); return r.json(); }
 
-// 🆕 شراء براكِت ذرّي: دخول + هدف + وقف في أمر واحد.
-//    مستحيل يبقى مركز بلا حماية — Alpaca تضمن تفعيل الوقف/الهدف فور تنفيذ الشراء.
-//    يحلّ كارثة "مركز مفتوح بلا وقف" (سبب خسائر -19%).
 async function buyBracket(sym, qty, tp, sl) {
   const dec = (Number(tp) < 1 || Number(sl) < 1) ? 4 : 2;
   const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
@@ -85,7 +114,6 @@ async function buyBracket(sym, qty, tp, sl) {
   return r.json();
 }
 
-// بيع وقف بسيط (شبكة أمان أخيرة لو فشل OCO/البراكِت) — الحماية أهم من الهدف
 async function stopSell(sym, qty, sl) {
   try {
     const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
@@ -97,7 +125,6 @@ async function stopSell(sym, qty, sl) {
   } catch { return null; }
 }
 
-// OCO بيع: هدف (limit) + وقف (stop) مرتبطان — أيّهما تحقّق يلغي الآخر
 async function ocoSell(sym, qty, tp, sl) {
   const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
     method: "POST", headers: H,
@@ -111,21 +138,18 @@ async function ocoSell(sym, qty, tp, sl) {
   return r.json();
 }
 
-// يضع حماية كامل الكمية: خروج كامل عند TP1 (المقاومة) بوقف البنية الذكي
-// 🆕 مُحصّن: يتحقّق من نجاح OCO، وإن فشل يضع وقفاً بسيطاً (لا يترك المركز عارياً أبداً)
 async function placeExits(sym, qty, p) {
-  const raw = Number(p.t1) * STRATEGY.tp1FillNudge;   // داخل المقاومة بقليل ليملأ
+  const raw = Number(p.t1) * STRATEGY.tp1FillNudge;
   const t1px = +raw.toFixed(Number(p.t1) < 1 ? 4 : 2);
   const resp = await ocoSell(sym, qty, t1px, Number(p.stop));
   if (resp && (resp.code || resp.status === "rejected")) {
-    // فشل OCO → شبكة أمان: وقف بسيط يضمن الحماية (نضحّي بالهدف مقابل عدم ترك المركز بلا وقف)
     await stopSell(sym, qty, Number(p.stop));
     return { ok: false, fallback: true };
   }
   return { ok: true };
 }
 
-// ───────── Supabase (جدول الخطط) ─────────
+// ───────── Supabase ─────────
 async function planList() { try { const r = await fetch(`${SUPABASE_URL}/rest/v1/bot_positions?status=eq.active&select=*`, { headers: SB_H }); const d = await r.json(); return Array.isArray(d) ? d : []; } catch { return []; } }
 async function planSave(p) {
   p.updated_at = new Date().toISOString();
@@ -139,28 +163,58 @@ async function planClose(sym) {
   });
 }
 
-// منطقة دخول مناسبة (مثل لمبة الرادار) — تعتمد المستويات الواقعية من الماسح
+// ───────── حساب SMA (للكشف عن التقاطع) ─────────
+function calcSMA(prices, period) {
+  if (!prices || prices.length < period) return null;
+  const slice = prices.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+// 🆕 كشف التقاطع الطازج MA9 > MA21
+function isFreshCross(closes, fast = 9, slow = 21) {
+  if (!closes || closes.length < slow + 2) return false;
+  const fastMA = calcSMA(closes, fast);
+  const slowMA = calcSMA(closes, slow);
+  const fastPrev = calcSMA(closes.slice(0, -1), fast);
+  const slowPrev = calcSMA(closes.slice(0, -1), slow);
+  if (!fastMA || !slowMA || !fastPrev || !slowPrev) return false;
+  return fastPrev <= slowPrev && fastMA > slowMA;
+}
+
+// 🆕 جلب شموع ساعة للكشف عن التقاطع
+async function fetchHourlyBars(symbol) {
+  try {
+    const to = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10);
+    const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/hour/${from}/${to}?adjusted=true&sort=asc&limit=120&apiKey=${process.env.POLYGON_API_KEY}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.results && data.results.length) ? data.results : null;
+  } catch { return null; }
+}
+
 function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
   if (!st || !price || !t1 || !stopPx) return false;
   const risk = price - stopPx;
   if (risk <= 0) return false;
   const rr = (t1 - price) / risk;
-  return price > st.support &&            // فوق الارتكاز
-         price <= st.confirm * buffer &&  // غير ملاحق (قرب/تحت التأكيد)
-         t1 >= price * (1 + minRoom) &&    // مسافة ربح كافية حتى TP1
-         rr >= minRR;                      // عائد/مخاطرة مجزٍ
+  return price > st.support &&
+         price <= st.confirm * buffer &&
+         t1 >= price * (1 + minRoom) &&
+         rr >= minRR;
 }
 
 export default async function handler(req, res) {
   try {
-    const log = { managed: [], entered: [], skipped: [] };
+    const log = { managed: [], entered: [], skipped: [], sniper: [] };
     const debug = { phase: "manage_only" };
     const now = new Date();
     const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     const mins = et.getHours() * 60 + et.getMinutes(), day = et.getDay();
     const weekend = day === 0 || day === 6;
-    const canManage = !weekend && mins >= 575 && mins <= 958;   // 9:35–3:58 ET
-    const canEnter  = !weekend && mins >= 590 && mins <  900;   // 9:50–3:00 ET
+    const canManage = !weekend && mins >= 575 && mins <= 958;
+    const canEnter  = !weekend && mins >= 590 && mins < 900;
 
     if (!canManage)
       return res.status(200).json({ success: true, message: "خارج ساعات الإدارة", ...log });
@@ -173,7 +227,6 @@ export default async function handler(req, res) {
         const held = await getPositionQty(sym);
         const live = await getLatestPrice(sym);
 
-        // أُغلق المركز بالكامل (وقف أو كل الأهداف)
         if (held === 0) {
           await cancelAll(sym);
           await planClose(sym);
@@ -181,7 +234,6 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // C) إضافة متدرّجة: نزل لمستوى الدخول، فوق الوقف، ولم نُضف بعد
         if (p.add_enabled && !p.added && !p.tp1_done && live &&
             live <= Number(p.add_level) && live > Number(p.stop) && p.add_qty > 0) {
           const acct = await getAccount();
@@ -198,23 +250,19 @@ export default async function handler(req, res) {
           }
         }
 
-        // 🆕 الخروج المتدرّج: السعر بلغ T1 ولم نَجنِ بعد → بِع نسبة (50% مضاربة/33% استثمار)
-        //    والباقي يبقى بوقف للتعادل + trailing (يطلّع مع الحركة الكبيرة).
         if (STRATEGY.tieredExit && !p.tp1_done && live && Number(p.t1) > 0 &&
             live >= Number(p.t1) * STRATEGY.tp1FillNudge && held >= 2) {
           const sellFrac = Number(p.t1_sell_frac) || STRATEGY.scalpT1Sell;
           const sellQty = Math.max(1, Math.floor(held * sellFrac));
           const keepQty = held - sellQty;
           await cancelAll(sym);
-          // بِع جزء السوق فوراً (احجز الربح)
           const sellResp = await fetch(`${ALPACA_BASE}/v2/orders`, {
             method: "POST", headers: H,
             body: JSON.stringify({ symbol: sym, qty: String(sellQty), side: "sell", type: "market", time_in_force: "day" }),
           }).then(r => r.json()).catch(() => null);
           p.tp1_done = true;
-          p.stop = +Number(p.avg_entry).toFixed(Number(p.avg_entry) < 1 ? 4 : 2);  // الباقي: وقف للتعادل
+          p.stop = +Number(p.avg_entry).toFixed(Number(p.avg_entry) < 1 ? 4 : 2);
           if (keepQty >= 1) {
-            // الباقي: هدف T3 + وقف تعادل (OCO)، يطلّع مع trailing لاحقاً
             const t3px = +(Number(p.t3) || live * 1.5).toFixed(Number(live) < 1 ? 4 : 2);
             let ok = await ocoSell(sym, keepQty, t3px, p.stop);
             if (!ok || ok.code) { await stopSell(sym, keepQty, p.stop); }
@@ -224,22 +272,19 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // B) كشف تنفيذ T1 عبر الأوامر (احتياطي للبراكِت القديم) → نقل الوقف للتعادل
         const tp1q = Math.floor(Number(p.total_qty) * STRATEGY.tp1Fraction);
         const remain = Number(p.total_qty) - tp1q;
         if (!p.tp1_done && held <= remain && held < Number(p.total_qty) && live && live > Number(p.avg_entry)) {
           p.tp1_done = true; p.be_moved = STRATEGY.breakevenAfterTp1;
           await cancelAll(sym);
-          await placeExits(sym, held, p);   // الباقي: T3 + وقف تعادل
+          await placeExits(sym, held, p);
           await planSave(p);
           log.managed.push({ symbol: sym, action: "جني T1 + وقف تعادل", remaining: held, stop: STRATEGY.breakevenAfterTp1 ? +Number(p.avg_entry).toFixed(2) : Number(p.stop) });
           continue;
         }
 
-        // 🆕 Trailing Stop بمراحل — يرفع الوقف مع صعود السهم (يحمي الربح المتراكم)
         if (STRATEGY.trailEnabled && live && Number(p.avg_entry) > 0) {
           const gain = (live - Number(p.avg_entry)) / Number(p.avg_entry);
-          // أعلى مرحلة بلغها الربح
           let newLock = null;
           for (const tier of STRATEGY.trailTiers) {
             if (gain >= tier.gain) newLock = tier.lock;
@@ -247,13 +292,11 @@ export default async function handler(req, res) {
           if (newLock != null) {
             const newStop = +(Number(p.avg_entry) * (1 + newLock)).toFixed(Number(p.avg_entry) < 1 ? 4 : 2);
             const curStop = Number(p.stop) || 0;
-            // نرفع الوقف فقط (لا ننزله أبداً)، وبفارق ملموس يتجاوز ضجيج صغير
             if (newStop > curStop && newStop < live) {
               await cancelAll(sym);
               const t3px = +(Number(p.t3) || live * 1.5).toFixed(Number(live) < 1 ? 4 : 2);
-              // هدف بعيد (T3) + وقف مرفوع — أيّهما تحقّق يلغي الآخر
               let ok = await ocoSell(sym, held, t3px, newStop);
-              if (!ok || ok.code) { await stopSell(sym, held, newStop); }  // fallback: وقف على الأقل
+              if (!ok || ok.code) { await stopSell(sym, held, newStop); }
               p.stop = newStop; p.trail_lock = newLock;
               await planSave(p);
               log.managed.push({ symbol: sym, action: "🔼 رفع الوقف (trailing)", gainPct: +(gain*100).toFixed(1), newStop, protects: `+${(newLock*100).toFixed(0)}%` });
@@ -262,7 +305,6 @@ export default async function handler(req, res) {
           }
         }
 
-        // إصلاح ذاتي: مركز مفتوح بلا أوامر حماية → أعد وضعها
         const oo = await getOpenOrders(sym);
         if (oo.length === 0) {
           await placeExits(sym, held, p);
@@ -275,8 +317,6 @@ export default async function handler(req, res) {
 
     // ═══ المرحلة 2: دخول صفقات جديدة ═══
     if (canEnter) {
-      // نقرأ إشارات اليوم المحفوظة (سريع) بدل مسح حيّ ثقيل يستهلك مهلة الدالة (Hobby 10ث).
-      //   البوت يتحقق من السعر الحيّ لكل سهم قبل الدخول، فلا حاجة للمسح اللحظي هنا.
       const todayET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }))
         .toISOString().split("T")[0];
       let candidates = [];
@@ -286,7 +326,7 @@ export default async function handler(req, res) {
           const rows = await sr.json();
           candidates = (Array.isArray(rows) ? rows : []).map(r => ({ ...r, price: r.entry_price }));
         }
-      } catch { /* تجاهل — نكتفي بالإدارة */ }
+      } catch { /* تجاهل */ }
 
       const filtered = candidates.filter(s => {
         if (s.score < STRATEGY.minScore) return false;
@@ -295,7 +335,7 @@ export default async function handler(req, res) {
         if (s.volume < STRATEGY.minVolume) return false;
         if (s.rsi != null && s.rsi > STRATEGY.maxRSI) return false;
         if (s.vwap && s.price <= s.vwap) return false;
-        if (!s.structure || s.structure.stop == null || s.structure.t1 == null) return false; // المحرك الذكي يتطلب بنية
+        if (!s.structure || s.structure.stop == null || s.structure.t1 == null) return false;
         const f = s.structure.flag || "";
         if (STRATEGY.skipChasers && (f.indexOf("ملاحقة") >= 0 || f.indexOf("غير مؤكد") >= 0 || f.indexOf("هابط") >= 0)) return false;
         return true;
@@ -318,6 +358,7 @@ export default async function handler(req, res) {
       let deployed = positions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
       const maxDeployed = balance * STRATEGY.maxDeployedPct;
 
+      // ─── حلقة الدخول ──────────────────────────────────────────
       for (const s of filtered) {
         if (openCount >= STRATEGY.maxTrades) break;
         if (openSymbols.has(s.symbol)) continue;
@@ -326,70 +367,119 @@ export default async function handler(req, res) {
         const px = live || s.price;
         if (!px) { log.skipped.push({ symbol: s.symbol, reason: "لا يوجد سعر" }); continue; }
 
-        // 🆕 فلتر الانحراف (Drift): الرادار رصد السهم بسعر قديم؛ لو طار >3% عنه،
-        //    الدخول الآن = دخول متأخر (R:R منهار). نرفض بدل ما نخسر.
+        // 🆕 كشف زخم الصياد
+        let isSniper = false;
+        let sniperStopPx = 0;
+        let sniperT1 = 0;
+        let sniperT2 = 0;
+        let sniperRisk = STRATEGY.riskPerTradePct;
+
+        if (STRATEGY.sniperEnabled) {
+          // 1) جلب شموع ساعة للكشف عن التقاطع
+          let freshCross = false;
+          try {
+            const hourlyBars = await fetchHourlyBars(s.symbol);
+            if (hourlyBars && hourlyBars.length > 21) {
+              const hourlyCloses = hourlyBars.map(b => b.c);
+              freshCross = isFreshCross(hourlyCloses, 9, 21);
+            }
+          } catch { /* تجاهل */ }
+
+          // 2) التحقق من شروط الصياد
+          const sniperConditions = {
+            score: s.score >= STRATEGY.sniper.minScore,
+            rvol: s.rvol >= STRATEGY.sniper.minRvol,
+            rsi: s.rsi >= STRATEGY.sniper.minRSI && s.rsi <= STRATEGY.sniper.maxRSI,
+            change: s.change_pct >= STRATEGY.sniper.minChange && s.change_pct <= STRATEGY.sniper.maxChange,
+            volume: s.volume >= STRATEGY.sniper.minVolume,
+            cross: !STRATEGY.sniper.requireCross || freshCross,
+          };
+
+          const allConditions = Object.values(sniperConditions).every(v => v === true);
+
+          if (allConditions) {
+            isSniper = true;
+            // وقف صارم 4%
+            sniperStopPx = px * (1 - STRATEGY.sniper.stopLoss);
+            // أهداف سريعة
+            sniperT1 = px * (1 + STRATEGY.sniper.target1);
+            sniperT2 = px * (1 + STRATEGY.sniper.target2);
+            // مخاطرة أقل 1%
+            sniperRisk = STRATEGY.sniper.riskPerTrade;
+            log.sniper.push({ symbol: s.symbol, score: s.score, rvol: s.rvol, rsi: s.rsi, cross: freshCross });
+          }
+        }
+
         const radarPx = Number(s.price) || px;
         const driftPct = ((px - radarPx) / radarPx) * 100;
         if (driftPct > STRATEGY.maxDriftPct * 100) {
-          log.skipped.push({ symbol: s.symbol, reason: `سعر متأخر ${driftPct.toFixed(1)}% (رادار ${radarPx} → حي ${px.toFixed(2)})` });
+          log.skipped.push({ symbol: s.symbol, reason: `سعر متأخر ${driftPct.toFixed(1)}%` });
           continue;
         }
 
-        // 🆕 إعادة حساب المستويات بذكاء (مو ratio خطي):
-        //    • الدعم/المقاومة = مستويات بنيوية ثابتة (لا تتحرك بحركة السعر — هي أسعار تاريخية).
-        //    • الوقف = تحت الدعم الحقيقي مباشرة (مو الوقف القديم × نسبة).
-        //    • الأهداف = تتناسب جزئياً مع حركة السعر (المقاومة تتحرك أبطأ من السعر).
+        // إعادة حساب المستويات
         const support  = Number(st.support != null ? st.support : radarPx * 0.97);
         const confirm  = Number(st.confirm != null ? st.confirm : radarPx);
-        // الأهداف: لو السعر تحرّك، نحرّك الهدف بنفس فرق السعر المطلق (يحافظ على المسافة الواقعية)
         const priceShift = px - radarPx;
-        const t1     = Number(s.target1   != null ? s.target1   : st.t1) + priceShift;
-        const t3     = Number(s.target3   != null ? s.target3   : st.t3) + priceShift;
-        // الوقف = تحت الدعم الحقيقي بهامش بسيط (مو الوقف القديم × نسبة)
-        let   stopPx = support > 0 && support < px ? support * 0.995
-                     : Number(s.stop_loss != null ? s.stop_loss : st.stop);
+        let t1 = Number(s.target1 != null ? s.target1 : st.t1) + priceShift;
+        let t3 = Number(s.target3 != null ? s.target3 : st.t3) + priceShift;
+        let stopPx = support > 0 && support < px ? support * 0.995
+                   : Number(s.stop_loss != null ? s.stop_loss : st.stop);
 
-        // 🆕 رفض لو ضرب الوقف قبل الدخول (السعر الحي تحت الوقف = صفقة خاسرة أصلاً)
+        // 🆕 إذا كان صياداً، استخدم وقف وأهداف الصياد
+        if (isSniper) {
+          // استخدم وقف الصياد (أكثر صرامة)
+          if (sniperStopPx > stopPx) stopPx = sniperStopPx;
+          // استخدم أهداف الصياد (T1, T2)
+          t1 = sniperT1;
+          // T3 = T2 (نفس الهدف للصفقات السريعة)
+          t3 = sniperT2;
+        }
+
         if (stopPx > 0 && px <= stopPx) {
-          log.skipped.push({ symbol: s.symbol, reason: `ضرب الوقف (${stopPx.toFixed(2)}) قبل الدخول` });
+          log.skipped.push({ symbol: s.symbol, reason: `ضرب الوقف (${stopPx.toFixed(2)})` });
           continue;
         }
 
-        // 🆕 سقف خسارة صارم 7%: لو الوقف أبعد من 7% تحت السعر الحيّ، نرفعه لحد 7%.
-        const capFloor = px * (1 - STRATEGY.maxLossPct);
+        const capFloor = px * (1 - (isSniper ? STRATEGY.sniper.stopLoss : STRATEGY.maxLossPct));
         if (stopPx < capFloor) stopPx = capFloor;
 
-        // 🆕 إعادة فحص R:R بالقيم المعاد حسابها (يرفض الدخول المتأخر بهدف قريب/وقف بعيد)
         const rrLive = (px - stopPx) > 0 ? (t1 - px) / (px - stopPx) : 0;
         if (rrLive < STRATEGY.minRR) {
-          log.skipped.push({ symbol: s.symbol, reason: `R:R ${rrLive.toFixed(1)} بعد إعادة الحساب`, px: +px.toFixed(2) });
+          log.skipped.push({ symbol: s.symbol, reason: `R:R ${rrLive.toFixed(1)}` });
           continue;
         }
 
-        // البنية المعاد حسابها — كل الحقول محدّثة (support/confirm للـsuitableEntry والإدارة)
         const stLive = { ...st, support, confirm, t1, stop: stopPx, t3, rr: +rrLive.toFixed(2), entry: px };
 
         if (!suitableEntry(stLive, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
-          log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول / R:R ضعيف", px: +px.toFixed(2), confirm: +confirm.toFixed(2) }); continue;
+          log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول" });
+          continue;
         }
+
         const riskPerShare = px - stopPx;
         if (riskPerShare <= 0) { log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" }); continue; }
 
-        // 🆕 تحجيم ذكي حسب جودة الفرصة: كل ما كانت الإشارة أقوى (سكور + VCP + Fresh Zone)
-        //    زاد حجم المركز — ضمن السقف الآمن (لا نخاطر بأكثر من maxPositionPct مهما كانت قوية).
-        //    فرصة استثنائية تأخذ حجماً أكبر، عادية تأخذ أصغر = ثقة محسوبة، لا مقامرة.
+        // 🆕 تحجيم ذكي مع دعم الصياد
         let qualityMult = 1.0;
         const sc = Number(s.score) || 60;
-        if (sc >= 85) qualityMult = 1.6;        // استثنائية
-        else if (sc >= 75) qualityMult = 1.35;  // ممتازة
-        else if (sc >= 68) qualityMult = 1.15;  // جيدة جداً
-        else qualityMult = 0.85;                 // عادية (حجم أصغر)
-        if (s.vcp) qualityMult += 0.15;          // انكماش تذبذب = جودة أعلى
-        if (s.fresh_zone) qualityMult += 0.10;   // دعم طازج = جودة أعلى
+        if (sc >= 85) qualityMult = 1.6;
+        else if (sc >= 75) qualityMult = 1.35;
+        else if (sc >= 68) qualityMult = 1.15;
+        else qualityMult = 0.85;
+        if (s.vcp) qualityMult += 0.15;
+        if (s.fresh_zone) qualityMult += 0.10;
+        
+        // 🆕 مضاعف الصياد (حجم أكبر للصفقات السريعة)
+        if (isSniper) qualityMult *= 1.1;
 
-        let fullValue = (balance * STRATEGY.riskPerTradePct) * px / riskPerShare;
-        fullValue = fullValue * qualityMult;     // 🆕 يتضخّم/ينكمش حسب الجودة
-        fullValue = Math.min(fullValue, balance * STRATEGY.maxPositionPct);   // السقف الآمن يحمي دائماً
+        let fullValue = (balance * (isSniper ? sniperRisk : STRATEGY.riskPerTradePct)) * px / riskPerShare;
+        fullValue = fullValue * qualityMult;
+        
+        // 🆕 سقف أقل للصياد (حماية)
+        const maxPosPct = isSniper ? STRATEGY.sniper.maxPosition : STRATEGY.maxPositionPct;
+        fullValue = Math.min(fullValue, balance * maxPosPct);
+        
         if (fullValue < balance * STRATEGY.minPositionPct) { log.skipped.push({ symbol: s.symbol, reason: "تحت أرضية المركز" }); continue; }
         if (deployed + fullValue > maxDeployed) { log.skipped.push({ symbol: s.symbol, reason: "بلغ سقف الانتشار" }); break; }
 
@@ -398,16 +488,17 @@ export default async function handler(req, res) {
         const initialQty = Math.max(1, Math.floor(fullQty * STRATEGY.initialFraction));
         const addQty = fullQty - initialQty;
 
-        // 🆕 شراء براكِت ذرّي: الدخول + الوقف معاً (الوقف مضمون من لحظة التنفيذ).
-        //    الهدف في البراكِت = T3 (هدف بعيد) كي لا يبيع الكل عند T1 — الإدارة المتدرّجة
-        //    تتولّى البيع الجزئي عند T1 ثم trailing للباقي.
-        const brTp = STRATEGY.tieredExit
+        // شراء
+        const brTp = isSniper
+          ? +(t3 || t1 * 1.05).toFixed(Number(t3) < 1 ? 4 : 2)  // للصياد: هدف قريب
+          : STRATEGY.tieredExit
           ? +(Number(t3) || Number(t1) * 1.2).toFixed(Number(t3) < 1 ? 4 : 2)
           : +(Number(t1) * STRATEGY.tp1FillNudge).toFixed(Number(t1) < 1 ? 4 : 2);
+        
         const buy = await buyBracket(s.symbol, initialQty, brTp, stopPx);
         if (buy.status === "rejected" || buy.code) {
-          // فشل البراكِت (سعر/حد) → لا ندخل أبداً بلا حماية. نتخطّى بدل المخاطرة بمركز عارٍ.
-          log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت (لا دخول بلا وقف)", err: buy.message || null }); continue;
+          log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت", err: buy.message || null });
+          continue;
         }
 
         const plan = {
@@ -415,18 +506,25 @@ export default async function handler(req, res) {
           initial_qty: initialQty, add_qty: addQty, added: false, add_enabled: STRATEGY.addEnabled && addQty > 0,
           total_qty: initialQty, avg_entry: px, add_level: (support + px) / 2, stop: stopPx, t1: t1, t3: t3,
           support: support, confirm: confirm, tp1_done: false, be_moved: false,
-          // 🆕 نوع السهم + نسبة البيع عند T1 (للخروج المتدرّج)
-          stock_type: s.type || "مضاربة",
-          t1_sell_frac: (s.type === "استثمار") ? STRATEGY.investT1Sell : STRATEGY.scalpT1Sell,
+          stock_type: isSniper ? "صياد 🎯" : (s.type || "مضاربة"),
+          t1_sell_frac: isSniper ? 0.66 : (s.type === "استثمار" ? STRATEGY.investT1Sell : STRATEGY.scalpT1Sell),
+          is_sniper: isSniper,
         };
-        // البراكِت وضع الحماية ذرّياً — لا حاجة لـ placeExits منفصل هنا (يمنع أمراً مكرراً)
         await planSave(plan);
 
         deployed += initialQty * px; openCount++; openSymbols.add(s.symbol);
-        log.entered.push({ symbol: s.symbol, px: +px.toFixed(2), initialQty, reserveAdd: addQty, stop: +stopPx.toFixed(2), tp1: +t1.toFixed(2), exit: "bracket@TP1", rr: +((t1 - px) / (px - stopPx)).toFixed(2) });
+        log.entered.push({
+          symbol: s.symbol,
+          type: isSniper ? "SNIPER 🎯" : "REGULAR",
+          px: +px.toFixed(2),
+          initialQty,
+          reserveAdd: addQty,
+          stop: +stopPx.toFixed(2),
+          tp1: +t1.toFixed(2),
+          rr: +((t1 - px) / (px - stopPx)).toFixed(2),
+        });
       }
 
-      // 📊 Telemetry — ليش دخل/ما دخل (قمع البوت): مرشحون → بعد الفلتر → الأسباب
       const skipTally = {};
       for (const sk of log.skipped) skipTally[sk.reason] = (skipTally[sk.reason] || 0) + 1;
       debug.phase = "enter";
@@ -437,6 +535,7 @@ export default async function handler(req, res) {
       debug.entered = log.entered.length;
       debug.skipped = log.skipped.length;
       debug.skip_reasons = skipTally;
+      debug.sniper_candidates = log.sniper.length;
       debug.deployed_pct = balance > 0 ? Math.round((deployed / balance) * 100) : 0;
     }
 
