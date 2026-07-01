@@ -5,10 +5,18 @@ const fmt = (n) => parseFloat(n||0).toLocaleString("en-US",{minimumFractionDigit
 const pct = (n) => { const v=parseFloat(n||0); return (v>=0?"+":"")+v.toFixed(2)+"%"; };
 const POLYGON_KEY = process.env.NEXT_PUBLIC_POLYGON_KEY || "";
 
+// ─── 🕐 الحصول على تاريخ اليوم وأمس بتوقيت السعودية ─────────────
+function getSaudiDate(offsetDays = 0) {
+  const now = new Date();
+  const saudi = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  saudi.setDate(saudi.getDate() + offsetDays);
+  return saudi.toISOString().split('T')[0];
+}
+
 const saveEquity = (equity) => {
   try {
     const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    const today = getSaudiDate(0);
     const history = JSON.parse(localStorage.getItem("equityHistory")||"{}");
     history[today] = parseFloat(equity||0);
     const keys = Object.keys(history).sort();
@@ -168,7 +176,7 @@ export default function App() {
   const [equityHist,setEquityHist]=useState({});
   const [expandedPos,setExpandedPos]=useState(null);
   const [closingPos,setClosingPos]=useState(null);
-  const [perfRange,setPerfRange]=useState("all"); // فلتر تاريخ الأداء
+  const [perfRange,setPerfRange]=useState("today"); // 🆕 افتراضي: اليوم
 
   const closeOne = async(symbol)=>{
     setClosingPos(symbol);
@@ -233,45 +241,49 @@ export default function App() {
   };
   const market = marketStatus();
 
-  const today = new Date().toLocaleDateString("en-CA");
-  const todayOrders = ord.filter(o => o.filled_at && new Date(o.filled_at).toLocaleDateString("en-CA")===today);
+  const today = getSaudiDate(0);
+  const todayOrders = ord.filter(o => o.filled_at && new Date(o.filled_at).toISOString().split('T')[0] === today);
   const sellOrders = todayOrders.filter(o => o.side==="sell" && o.status==="filled");
   const todayPnLList = sellOrders.map(o => calcPnL(o, ord)).filter(Boolean);
   const todayTotalPL = todayPnLList.reduce((sum,x)=>sum+x.pl, 0);
   const todayTotalPct = eq > 0 ? (todayTotalPL / (eq - todayTotalPL)) * 100 : 0;
 
-  // ═══ حساب الأداء حسب فلتر التاريخ ═══
+  // ═══ حساب الأداء حسب فلتر التاريخ (بتوقيت السعودية) ═══
   const perf = useMemo(() => {
-    const now = Date.now();
-    const ranges = {
-      today: 1 * 86400000,
-      week:  7 * 86400000,
-      month: 30 * 86400000,
-      all:   Infinity,
-    };
-    const cutoff = ranges[perfRange] === Infinity ? 0 : now - ranges[perfRange];
-
-    // كل صفقات البيع المنفّذة ضمن الفترة
+    const today = getSaudiDate(0);
+    const weekAgo = getSaudiDate(-7);
+    const monthAgo = getSaudiDate(-30);
+    
     const closed = ord
       .filter(o => o.side === "sell" && o.status === "filled" && o.filled_at)
-      .filter(o => new Date(o.filled_at).getTime() >= cutoff)
       .map(o => ({ order: o, pnl: calcPnL(o, ord) }))
       .filter(x => x.pnl);
 
-    const wins   = closed.filter(x => x.pnl.pl >= 0);
-    const losses = closed.filter(x => x.pnl.pl < 0);
-    const totalPL    = closed.reduce((s,x) => s + x.pnl.pl, 0);
+    let filtered = [];
+    if (perfRange === "today") {
+      filtered = closed.filter(x => new Date(x.order.filled_at).toISOString().split('T')[0] === today);
+    } else if (perfRange === "week") {
+      filtered = closed.filter(x => new Date(x.order.filled_at).toISOString().split('T')[0] >= weekAgo);
+    } else if (perfRange === "month") {
+      filtered = closed.filter(x => new Date(x.order.filled_at).toISOString().split('T')[0] >= monthAgo);
+    } else {
+      filtered = closed; // all
+    }
+
+    const wins   = filtered.filter(x => x.pnl.pl >= 0);
+    const losses = filtered.filter(x => x.pnl.pl < 0);
+    const totalPL    = filtered.reduce((s,x) => s + x.pnl.pl, 0);
     const grossWin   = wins.reduce((s,x) => s + x.pnl.pl, 0);
     const grossLoss  = losses.reduce((s,x) => s + x.pnl.pl, 0);
-    const winRate    = closed.length ? (wins.length / closed.length) * 100 : 0;
+    const winRate    = filtered.length ? (wins.length / filtered.length) * 100 : 0;
     const avgWin     = wins.length ? grossWin / wins.length : 0;
     const avgLoss    = losses.length ? grossLoss / losses.length : 0;
-    const bestTrade  = closed.length ? Math.max(...closed.map(x => x.pnl.pl)) : 0;
-    const worstTrade = closed.length ? Math.min(...closed.map(x => x.pnl.pl)) : 0;
+    const bestTrade  = filtered.length ? Math.max(...filtered.map(x => x.pnl.pl)) : 0;
+    const worstTrade = filtered.length ? Math.min(...filtered.map(x => x.pnl.pl)) : 0;
 
     return {
-      closed: closed.sort((a,b) => new Date(b.order.filled_at) - new Date(a.order.filled_at)),
-      total: closed.length, wins: wins.length, losses: losses.length,
+      closed: filtered.sort((a,b) => new Date(b.order.filled_at) - new Date(a.order.filled_at)),
+      total: filtered.length, wins: wins.length, losses: losses.length,
       totalPL, grossWin, grossLoss, winRate, avgWin, avgLoss, bestTrade, worstTrade,
     };
   }, [ord, perfRange]);
@@ -378,7 +390,6 @@ export default function App() {
 
       {/* ═══════════ تبويب الأداء ═══════════ */}
       {tab==="performance" && <>
-        {/* فلتر التاريخ */}
         <div style={{display:"flex",gap:8,marginBottom:18}}>
           <button style={rangeBtn("today","اليوم")} onClick={()=>setPerfRange("today")}>اليوم</button>
           <button style={rangeBtn("week","أسبوع")} onClick={()=>setPerfRange("week")}>أسبوع</button>
@@ -386,7 +397,6 @@ export default function App() {
           <button style={rangeBtn("all","الكل")} onClick={()=>setPerfRange("all")}>الكل</button>
         </div>
 
-        {/* البطل: صافي الربح */}
         <div style={{textAlign:"center",padding:"24px 16px",background:`linear-gradient(160deg,${perf.totalPL>=0?"rgba(0,212,170,0.12)":"rgba(255,71,87,0.12)"},transparent)`,border:`1px solid ${perf.totalPL>=0?"rgba(0,212,170,0.3)":"rgba(255,71,87,0.3)"}`,borderRadius:20,marginBottom:16}}>
           <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",marginBottom:6}}>صافي الربح/الخسارة</div>
           <div style={{fontSize:42,fontWeight:900,color:perf.totalPL>=0?"#00d4aa":"#ff4757",fontFamily:"monospace",lineHeight:1,direction:"ltr"}}>
@@ -397,7 +407,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* صف الإحصائيات الأساسية */}
         <div style={{display:"flex",gap:10,marginBottom:12}}>
           {[
             {l:"رابحة",v:perf.wins,c:"#00d4aa"},
@@ -411,7 +420,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* تفاصيل الأرباح والخسائر */}
         <div style={{display:"flex",gap:10,marginBottom:12}}>
           <div style={{flex:1,background:"rgba(0,212,170,0.06)",border:"1px solid rgba(0,212,170,0.2)",borderRadius:14,padding:"12px",direction:"ltr",textAlign:"center"}}>
             <div style={{fontSize:9,color:"rgba(255,255,255,0.4)",marginBottom:4,direction:"rtl"}}>إجمالي الأرباح</div>
@@ -423,7 +431,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* أفضل وأسوأ صفقة */}
         <div style={{display:"flex",gap:10,marginBottom:20}}>
           <div style={{flex:1,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"12px",direction:"ltr",textAlign:"center"}}>
             <div style={{fontSize:9,color:"rgba(255,255,255,0.4)",marginBottom:4,direction:"rtl"}}>🏆 أفضل صفقة</div>
@@ -435,7 +442,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* قائمة الصفقات المغلقة في الفترة */}
         <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.5)",marginBottom:10}}>📋 صفقات الفترة ({perf.total})</div>
         {perf.closed.length===0
           ?<div style={{textAlign:"center",color:"rgba(255,255,255,0.2)",fontSize:12,padding:40,background:"rgba(255,255,255,0.02)",borderRadius:12}}>لا توجد صفقات مغلقة في هذه الفترة</div>
