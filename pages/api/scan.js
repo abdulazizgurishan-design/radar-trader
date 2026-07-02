@@ -1,32 +1,63 @@
-// pages/api/scan.js — v3 (الفترات الذهبية للتداول الآلي)
-// ═══════════════════════════════════════════════════════════════════
-//  ✅ يقرأ is_target (🎯 الهدف) ويعطيه الأولوية
-//  ✅ أصلح اسم حقل الأخبار: news_age_h
-//  ✅ نافذة أحدث (3 ساعات) → السعر الحي ≈ سعر دخول الرادار
-//  ✅ نظام الفترات الذهبية:
-//        الفترة الأولى: 4:30م - 6:30م (القناص + الزخم)
-//        الفترة الثانية: 10:00م - 11:00م (الزخم المتأخر)
-//  ✅ أهداف قريبة وسريعة للصفقات الآلية
-// ═══════════════════════════════════════════════════════════════════
+// ============================================================
+// scan.js — MONEY MACHINE v2 🔍
+// جلب إشارات RadarAZ مع فلاتر محسّنة للأهداف الصغيرة
+// الفترات الذهبية: 4:30م-6:30م (قناص) | 10:00م-11:00م (زخم)
+// ============================================================
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.RADARAZ_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.RADARAZ_SUPABASE_KEY;
 
-const MIN_SCORE       = 60;
-const LOOKBACK_HOURS  = 3;
-const MAX_LEADERS     = 20;
-const MAX_SPECULATION = 30;
+// ─── الإعدادات الجديدة ────────────────────────────────────
+const CONFIG = {
+  // 🎯 الأهداف والوقف (ثابتة)
+  TARGET_PROFIT: 0.007,      // 0.7%
+  STOP_LOSS: 0.005,          // 0.5%
+  MIN_RR: 1.4,               // 1.4:1
+  
+  // 🔍 فلاتر صارمة
+  MIN_SCORE: 70,
+  MIN_PRICE: 5,
+  MIN_CHANGE: 1.5,
+  MAX_CHANGE: 5,
+  MIN_VOLUME: 200000,
+  MIN_RVOL: 1.5,
+  MIN_RSI: 55,
+  MAX_RSI: 70,
+  
+  // 📊 الكميات
+  MAX_RESULTS: 20,
+  MAX_LEADERS: 20,
+  MAX_SPECULATION: 30,
+};
 
-// ─── 🕐 نظام الفترات الذهبية للتداول الآلي ──────────────────────
+// ─── حساب الأهداف السريعة ──────────────────────────────────
+function calcFastTargets(price) {
+  const target = price * (1 + CONFIG.TARGET_PROFIT);
+  const stop = price * (1 - CONFIG.STOP_LOSS);
+  const risk = price - stop;
+  const reward = target - price;
+  const rr = risk > 0 ? reward / risk : 0;
+  
+  return {
+    sl: +stop.toFixed(2),
+    t1: +target.toFixed(2),
+    risk: +risk.toFixed(2),
+    slPct: -((risk / price) * 100).toFixed(2),
+    t1Pct: +((reward / price) * 100).toFixed(2),
+    rr: +rr.toFixed(2),
+  };
+}
+
+// ─── التحقق من وقت التداول ──────────────────────────────────
 function getTradingSession() {
   const saudiNow = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
   const h = saudiNow.getHours(), m = saudiNow.getMinutes();
   const minutes = h * 60 + m;
   
-  // الفترة الأولى: 4:30م - 6:30م (الزخم الصباحي)
+  // الفترة الأولى: 4:30م - 6:30م (بتوقيت السعودية)
   const isSession1 = minutes >= 16 * 60 + 30 && minutes < 18 * 60 + 30;
   
-  // الفترة الثانية: 10:00م - 11:00م (الزخم المسائي)
+  // الفترة الثانية: 10:00م - 11:00م (بتوقيت السعودية)
   const isSession2 = minutes >= 22 * 60 && minutes < 23 * 60;
   
   let session = "off";
@@ -39,18 +70,16 @@ function getTradingSession() {
     config = {
       name: "الزخم الصباحي",
       strategy: "sniper_momentum",
-      minScore: 68,
-      minPrice: 3,
-      maxChange: 8,
-      minChange: 2,
-      minVolume: 100_000,
-      maxRSI: 75,
-      minRR: 1.0,
-      maxResults: 20,
-      stopLoss: 0.04,
-      target1: 0.035,
-      target2: 0.06,
-      target3: 0.09,
+      minScore: CONFIG.MIN_SCORE,
+      minPrice: CONFIG.MIN_PRICE,
+      maxChange: CONFIG.MAX_CHANGE,
+      minChange: CONFIG.MIN_CHANGE,
+      minVolume: CONFIG.MIN_VOLUME,
+      maxRSI: CONFIG.MAX_RSI,
+      minRR: CONFIG.MIN_RR,
+      maxResults: CONFIG.MAX_RESULTS,
+      stopLoss: CONFIG.STOP_LOSS,
+      target1: CONFIG.TARGET_PROFIT,
     };
   } else if (isSession2) {
     session = "session2";
@@ -58,81 +87,41 @@ function getTradingSession() {
     config = {
       name: "الزخم المسائي",
       strategy: "late_momentum",
-      minScore: 55,
-      minPrice: 2,
-      maxChange: 5,
-      minChange: 1.5,
-      minVolume: 50_000,
-      maxRSI: 72,
-      minRR: 0.8,
-      maxResults: 15,
-      stopLoss: 0.03,
-      target1: 0.025,
-      target2: 0.04,
-      target3: 0.06,
+      minScore: Math.max(CONFIG.MIN_SCORE - 5, 65),
+      minPrice: CONFIG.MIN_PRICE,
+      maxChange: CONFIG.MAX_CHANGE - 1,
+      minChange: CONFIG.MIN_CHANGE - 0.3,
+      minVolume: CONFIG.MIN_VOLUME - 50000,
+      maxRSI: CONFIG.MAX_RSI - 2,
+      minRR: CONFIG.MIN_RR,
+      maxResults: Math.min(CONFIG.MAX_RESULTS - 5, 15),
+      stopLoss: CONFIG.STOP_LOSS,
+      target1: CONFIG.TARGET_PROFIT,
     };
   }
   
   return { session, label, config, isSession1, isSession2, minutes };
 }
 
-// ─── 🕐 نافذة التداول الأساسية (احتياطي) ────────────────────────
-const TRADING_START_HOUR_ET = 9,  TRADING_START_MIN_ET = 50;
-const TRADING_END_HOUR_ET   = 15, TRADING_END_MIN_ET   = 0;
+// ─── التحقق من نافذة التداول الأمريكية ──────────────────────
+const TRADING_START_HOUR_ET = 9, TRADING_START_MIN_ET = 30;
+const TRADING_END_HOUR_ET = 16, TRADING_END_MIN_ET = 0;
 
 function isTradingWindow() {
   const now = new Date();
-  const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
   const day = et.getDay();
   if (day === 0 || day === 6) return false;
-  const minutesNow   = et.getHours() * 60 + et.getMinutes();
+  const minutesNow = et.getHours() * 60 + et.getMinutes();
   const minutesStart = TRADING_START_HOUR_ET * 60 + TRADING_START_MIN_ET;
-  const minutesEnd   = TRADING_END_HOUR_ET   * 60 + TRADING_END_MIN_ET;
+  const minutesEnd = TRADING_END_HOUR_ET * 60 + TRADING_END_MIN_ET;
   return minutesNow >= minutesStart && minutesNow < minutesEnd;
 }
 
-// ─── 🎯 حساب أهداف سريعة للصفقات الآلية ──────────────────────────
-function calcFastTargets(price, structure, sessionConfig) {
-  const stopPct = sessionConfig.stopLoss;
-  const target1Pct = sessionConfig.target1;
-  const target2Pct = sessionConfig.target2;
-  const target3Pct = sessionConfig.target3;
-  
-  // استخدام بنية السوق إن وجدت
-  let stop = structure?.stop ? Number(structure.stop) : price * (1 - stopPct);
-  let t1 = structure?.t1 ? Number(structure.t1) : price * (1 + target1Pct);
-  let t2 = structure?.t2 ? Number(structure.t2) : price * (1 + target2Pct);
-  let t3 = structure?.t3 ? Number(structure.t3) : price * (1 + target3Pct);
-  
-  // التأكد من ترتيب الأهداف
-  t2 = Math.max(t2, t1 * 1.005);
-  t3 = Math.max(t3, t2 * 1.005);
-  
-  // التأكد من أن الوقف أقل من السعر
-  if (stop >= price) {
-    stop = price * (1 - stopPct);
-  }
-  
-  const risk = price - stop;
-  const rr = risk > 0 ? ((t1 - price) / risk) : 0;
-  
-  return {
-    sl: +stop.toFixed(2),
-    t1: +t1.toFixed(2),
-    t2: +t2.toFixed(2),
-    t3: +t3.toFixed(2),
-    risk: +risk.toFixed(2),
-    slPct: -((risk / price) * 100).toFixed(2),
-    t1Pct: +(((t1 - price) / price) * 100).toFixed(2),
-    t2Pct: +(((t2 - price) / price) * 100).toFixed(2),
-    t3Pct: +(((t3 - price) / price) * 100).toFixed(2),
-    rr: +rr.toFixed(2),
-  };
-}
-
+// ─── الدالة الرئيسية ──────────────────────────────────────
 export default async function handler(req, res) {
   try {
-    // ─── 🕐 التحقق من الفترات الذهبية ──────────────────────────────
+    // ─── التحقق من الفترات الذهبية ──────────────────────
     const tradingSession = getTradingSession();
     const isActiveSession = tradingSession.session !== "off";
     const sessionConfig = tradingSession.config;
@@ -151,8 +140,8 @@ export default async function handler(req, res) {
         message: `⏳ خارج فترات التداول الآلي (${tradingSession.label})`,
       });
     }
-
-    // ─── التحقق من نافذة التداول الأساسية ──────────────────────────
+    
+    // ─── التحقق من نافذة التداول الأساسية ──────────────
     if (!isTradingWindow()) {
       return res.status(200).json({
         success: true,
@@ -166,23 +155,48 @@ export default async function handler(req, res) {
         message: "⏳ السوق خارج ساعات التداول الأساسية",
       });
     }
-
-    // ─── جلب الإشارات من Supabase ──────────────────────────────────
+    
+    // ─── جلب الإشارات من Supabase ──────────────────────
     const todayET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }))
       .toISOString().split("T")[0];
+    
     const url = `${SUPABASE_URL}/rest/v1/signals`
       + `?select=*`
-      + `&score=gte.${sessionConfig.minScore || MIN_SCORE}`
+      + `&score=gte.${sessionConfig.minScore}`
       + `&signal_date=eq.${todayET}`
       + `&order=score.desc`
       + `&limit=100`;
-
+    
     const r = await fetch(url, {
-      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+      headers: { 
+        apikey: SUPABASE_KEY, 
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+      },
     });
+    
     if (!r.ok) throw new Error(`Radaraz Supabase: ${r.status}`);
     const rows = await r.json();
-
+    
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(200).json({
+        success: true,
+        results: [],
+        leaders: [],
+        speculation: [],
+        total: 0,
+        market_open: true,
+        session: {
+          active: true,
+          label: tradingSession.label,
+          name: sessionConfig.name,
+          strategy: sessionConfig.strategy,
+        },
+        source: "radaraz",
+        message: "📭 لا توجد إشارات اليوم",
+      });
+    }
+    
     // إزالة المكررات
     const seen = new Set();
     const unique = rows.filter(s => {
@@ -190,55 +204,55 @@ export default async function handler(req, res) {
       seen.add(s.symbol);
       return true;
     });
-
-    // ─── تحويل صيغة Radaraz لصيغة البوت مع أهداف سريعة ────────────
+    
+    // ─── تحويل وتحليل الإشارات ──────────────────────────
     const formatted = unique
       .map(s => {
         const price = Number(s.entry_price) || 0;
         if (price === 0) return null;
-
-        // 🆕 حساب الأهداف السريعة حسب الفترة
-        const structure = s.structure || null;
-        const fastLevels = calcFastTargets(price, structure, sessionConfig);
-
+        
+        // حساب الأهداف السريعة
+        const fastLevels = calcFastTargets(price);
+        
+        // فلتر RR
+        if (fastLevels.rr < sessionConfig.minRR) return null;
+        
         const score = s.score || s.ep || 0;
-        const confidence = score >= 85 ? "💥 انفجاري" : score >= 70 ? "🔥 إشارة ممتازة" : "👀 مراقبة";
-
-        // 🆕 إضافة علامة الفترة
+        const confidence = score >= 85 ? "💥 انفجاري" : 
+                          score >= 75 ? "🔥 ممتاز" : 
+                          score >= 70 ? "✅ جيد" : "👀 مراقبة";
+        
         const sessionLabel = tradingSession.session === "session1" ? "⚡ قناص" : "🌙 زخم";
-
+        
         return {
           symbol: s.symbol,
-          price,
+          price: price,
           change_pct: Number(s.change_pct) || 0,
           volume: s.volume || 0,
           rr: fastLevels.rr,
           signal: `🎯 ${sessionLabel} ${confidence}`,
-          score,
+          score: score,
           type: s.type === "استثمار" ? "استثمار" : "مضاربة",
           rsi: s.rsi ?? null,
           ma_signal: s.ma_signal || null,
           atr14: s.atr14 ?? null,
           early_watch: s.early_watch || false,
           is_target: s.is_target || false,
-          vwap: null,
           rvol: Number(s.rvol) || null,
           is_hot: s.is_hot || false,
           news_age_h: s.news_age_h ?? null,
           structure: s.structure || null,
-          // 🆕 أهداف سريعة
+          vcp: s.vcp || false,
+          fresh_zone: s.fresh_zone || false,
+          // 🆕 الأهداف الجديدة (تتجاوز بنية الرادار)
           levels: {
             sl: fastLevels.sl,
             slPct: fastLevels.slPct,
             t1: fastLevels.t1,
             t1Pct: fastLevels.t1Pct,
-            t2: fastLevels.t2,
-            t2Pct: fastLevels.t2Pct,
-            t3: fastLevels.t3,
-            t3Pct: fastLevels.t3Pct,
             risk: fastLevels.risk,
           },
-          // 🆕 معلومات الفترة
+          // معلومات الفترة
           session: {
             name: sessionConfig.name,
             strategy: sessionConfig.strategy,
@@ -247,38 +261,84 @@ export default async function handler(req, res) {
         };
       })
       .filter(Boolean);
-
-    // ─── فلترة إضافية حسب إعدادات الفترة ──────────────────────────
+    
+    // ─── فلترة إضافية حسب إعدادات الفترة ──────────────
     const filtered = formatted.filter(s => {
-      if (s.price < (sessionConfig.minPrice || 2)) return false;
-      if (Math.abs(s.change_pct) > (sessionConfig.maxChange || 8)) return false;
-      if (Math.abs(s.change_pct) < (sessionConfig.minChange || 1.5)) return false;
-      if (s.volume < (sessionConfig.minVolume || 50_000)) return false;
-      if (s.rsi != null && s.rsi > (sessionConfig.maxRSI || 75)) return false;
-      if (s.rr < (sessionConfig.minRR || 0.8)) return false;
+      // فلتر السعر
+      if (s.price < (sessionConfig.minPrice || CONFIG.MIN_PRICE)) return false;
+      
+      // فلتر التغير (القيمة المطلقة للزخم)
+      const absChange = Math.abs(s.change_pct);
+      if (absChange > (sessionConfig.maxChange || CONFIG.MAX_CHANGE)) return false;
+      if (absChange < (sessionConfig.minChange || CONFIG.MIN_CHANGE)) return false;
+      
+      // فلتر الحجم
+      if (s.volume < (sessionConfig.minVolume || CONFIG.MIN_VOLUME)) return false;
+      
+      // فلتر RSI
+      if (s.rsi != null && s.rsi > (sessionConfig.maxRSI || CONFIG.MAX_RSI)) return false;
+      if (s.rsi != null && s.rsi < CONFIG.MIN_RSI) return false;
+      
+      // فلتر RVOL
+      if (s.rvol != null && s.rvol < CONFIG.MIN_RVOL) return false;
+      
+      // فلتر RR
+      if (s.rr < (sessionConfig.minRR || CONFIG.MIN_RR)) return false;
+      
       return true;
     });
-
-    // ─── ترتيب: 🎯 الهدف → دخول صحيح → رصد مبكر → HOT → score ────
-    const validEntry = x => x.structure && typeof x.structure.flag === "string" && x.structure.flag.indexOf("صحيح") >= 0;
+    
+    // ─── ترتيب حسب الأولوية ──────────────────────────────
+    const validEntry = x => {
+      if (!x.structure) return false;
+      const flag = x.structure.flag || "";
+      return flag.indexOf("صحيح") >= 0;
+    };
+    
     filtered.sort((a, b) => {
-      if (!!b.is_target   !== !!a.is_target)   return b.is_target   ? 1 : -1;
-      if (validEntry(b)   !== validEntry(a))   return validEntry(b) ? 1 : -1;
+      // 1. 🎯 الهدف أولاً
+      if (!!b.is_target !== !!a.is_target) return b.is_target ? 1 : -1;
+      // 2. دخول صحيح
+      if (validEntry(b) !== validEntry(a)) return validEntry(b) ? 1 : -1;
+      // 3. رصد مبكر
       if (!!b.early_watch !== !!a.early_watch) return b.early_watch ? 1 : -1;
+      // 4. HOT
       if (b.is_hot !== a.is_hot) return b.is_hot ? 1 : -1;
-      return b.score - a.score;
+      // 5. السكور
+      return (b.score || 0) - (a.score || 0);
     });
-
-    const maxResults = sessionConfig.maxResults || 20;
-    const leaders = filtered.filter(s => s.type === "استثمار").slice(0, MAX_LEADERS);
-    const spec = filtered.filter(s => s.type === "مضاربة").slice(0, Math.min(MAX_SPECULATION, maxResults));
-
+    
+    // ─── تقسيم النتائج ──────────────────────────────────
+    const maxResults = sessionConfig.maxResults || CONFIG.MAX_RESULTS;
+    const results = filtered.slice(0, maxResults);
+    
+    const leaders = results.filter(s => s.type === "استثمار").slice(0, CONFIG.MAX_LEADERS);
+    const speculation = results.filter(s => s.type === "مضاربة").slice(0, CONFIG.MAX_SPECULATION);
+    
+    // ─── إحصائيات الرفض ──────────────────────────────────
+    const skipStats = {
+      price: formatted.filter(s => s.price < (sessionConfig.minPrice || CONFIG.MIN_PRICE)).length,
+      change: formatted.filter(s => {
+        const absChange = Math.abs(s.change_pct);
+        return absChange > (sessionConfig.maxChange || CONFIG.MAX_CHANGE) || 
+               absChange < (sessionConfig.minChange || CONFIG.MIN_CHANGE);
+      }).length,
+      volume: formatted.filter(s => s.volume < (sessionConfig.minVolume || CONFIG.MIN_VOLUME)).length,
+      rsi: formatted.filter(s => {
+        if (s.rsi == null) return false;
+        return s.rsi > (sessionConfig.maxRSI || CONFIG.MAX_RSI) || s.rsi < CONFIG.MIN_RSI;
+      }).length,
+      rvol: formatted.filter(s => s.rvol != null && s.rvol < CONFIG.MIN_RVOL).length,
+      rr: formatted.filter(s => s.rr < (sessionConfig.minRR || CONFIG.MIN_RR)).length,
+    };
+    
     return res.status(200).json({
       success: true,
-      results: [...leaders, ...spec].slice(0, maxResults),
-      leaders,
-      speculation: spec,
+      results: results,
+      leaders: leaders,
+      speculation: speculation,
       total: filtered.length,
+      total_raw: unique.length,
       market_open: true,
       session: {
         active: true,
@@ -286,15 +346,37 @@ export default async function handler(req, res) {
         name: sessionConfig.name,
         strategy: sessionConfig.strategy,
         maxResults: maxResults,
+        isSession1: tradingSession.isSession1,
+        isSession2: tradingSession.isSession2,
+        minutes: tradingSession.minutes,
       },
       source: "radaraz",
+      config: {
+        target: `${(CONFIG.TARGET_PROFIT * 100).toFixed(1)}%`,
+        stop: `${(CONFIG.STOP_LOSS * 100).toFixed(1)}%`,
+        minScore: sessionConfig.minScore,
+        minRR: sessionConfig.minRR,
+        minPrice: sessionConfig.minPrice,
+        maxChange: sessionConfig.maxChange,
+        minChange: sessionConfig.minChange,
+        minVolume: sessionConfig.minVolume,
+        maxRSI: sessionConfig.maxRSI,
+      },
+      skip_stats: skipStats,
+      timestamp: new Date().toISOString(),
     });
-
+    
   } catch (error) {
+    console.error("❌ خطأ في scan.js:", error);
     return res.status(200).json({
       success: false,
       results: [],
+      leaders: [],
+      speculation: [],
+      total: 0,
+      market_open: false,
       error: error.message,
+      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 }
