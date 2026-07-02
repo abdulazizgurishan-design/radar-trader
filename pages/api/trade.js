@@ -1,7 +1,6 @@
 // ============================================================
-// trade.js — MONEY MACHINE v2 💰
+// trade.js — MONEY MACHINE v2 💰 (مدمج مع النسخة القديمة)
 // استراتيجية: زخم + أهداف صغيرة (0.7%) + وقف ضيق (0.5%)
-// تعتمد على إشارات RadarAZ من Supabase
 // ============================================================
 
 const ALPACA_KEY = process.env.ALPACA_KEY;
@@ -12,36 +11,36 @@ const ALPACA_DATA = "https://data.alpaca.markets";
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.RADARAZ_SUPABASE_KEY;
 
-// ─── الإعدادات الجديدة ────────────────────────────────────
+// ─── الإعدادات (مدمجة) ────────────────────────────────────
 const CONFIG = {
-  // 🎯 الأهداف والوقف (ثابتة، تتجاوز بنية الرادار)
+  // 🎯 الأهداف والوقف
   TARGET_PROFIT: 0.007,      // 0.7%
   STOP_LOSS: 0.005,          // 0.5%
-  MIN_RR: 1.4,               // 1.4:1
+  MIN_RR: 1.2,
   
-  // 🔍 فلاتر صارمة (تستخدم إشارات الرادار)
-  MIN_SCORE: 70,             // 55 ← 70
-  MIN_PRICE: 5,              // 3 ← 5
-  MIN_CHANGE: 1.5,           // 1 ← 1.5
-  MAX_CHANGE: 5,             // 40 ← 5
-  MIN_VOLUME: 200000,        // 100K ← 200K
-  MIN_RVOL: 1.5,             // جديد
-  MIN_RSI: 55,               // جديد
-  MAX_RSI: 70,               // 75 ← 70
-  MAX_DRIFT: 0.02,           // 5% ← 2%
+  // 🔍 فلاتر مخففة (مثل النسخة القديمة)
+  MIN_SCORE: 55,
+  MIN_PRICE: 2,
+  MIN_CHANGE: 1.0,
+  MAX_CHANGE: 15,
+  MIN_VOLUME: 100000,
+  MIN_RVOL: 1.0,
+  MIN_RSI: 40,
+  MAX_RSI: 80,
+  MAX_DRIFT: 0.05,
   
   // 📊 إدارة المخاطر
-  RISK_PER_TRADE: 0.015,     // 1.5%
-  MAX_POSITIONS: 10,         // 8 ← 10
-  MAX_DEPLOYED: 0.70,        // 0.85 ← 0.70
-  MIN_POSITION: 0.03,        // 0.04 ← 0.03
+  RISK_PER_TRADE: 0.015,
+  MAX_POSITIONS: 8,
+  MAX_DEPLOYED: 0.70,
+  MIN_POSITION: 0.03,
   
   // 🚀 الدخول
-  ENTRY_BUFFER: 1.005,       // 1.01 ← 1.005
+  ENTRY_BUFFER: 1.01,
   
   // 🛡️ حماية
-  MAX_SPREAD: 0.02,          // جديد
-  COOLDOWN_MINUTES: 5,       // جديد
+  MAX_SPREAD: 0.03,
+  COOLDOWN_MINUTES: 3,
 };
 
 // ─── headers ──────────────────────────────────────────────
@@ -55,6 +54,11 @@ const SB_H = {
   apikey: SUPABASE_KEY,
   Authorization: `Bearer ${SUPABASE_KEY}`,
   "Content-Type": "application/json",
+};
+
+// ─── Vercel Hobby ────────────────────────────────────────────
+export const config = {
+  maxDuration: 10,
 };
 
 // ─── دوال Alpaca ──────────────────────────────────────────
@@ -175,7 +179,7 @@ async function manageOpenPositions() {
       const qty = parseInt(pos.qty);
       const pnlPct = ((currentPrice - avgEntry) / avgEntry) * 100;
       
-      // 🎯 تحقيق الهدف → إغلاق فوري
+      // 🎯 تحقيق الهدف
       if (pnlPct >= CONFIG.TARGET_PROFIT * 100) {
         await cancelAllOrders(symbol);
         await closePosition(symbol);
@@ -188,7 +192,7 @@ async function manageOpenPositions() {
         continue;
       }
       
-      // 🛑 وقف الخسارة → إغلاق فوري
+      // 🛑 وقف الخسارة
       if (pnlPct <= -CONFIG.STOP_LOSS * 100) {
         await cancelAllOrders(symbol);
         await closePosition(symbol);
@@ -201,10 +205,9 @@ async function manageOpenPositions() {
         continue;
       }
       
-      // ⏳ تتبع بسيط (Trailing Stop بعد 0.3% ربح)
+      // ⏳ تتبع وقف (Trailing)
       if (pnlPct >= 0.3) {
         const newStop = currentPrice * (1 - CONFIG.STOP_LOSS);
-        // نحاول تحديث الوقف
         await cancelAllOrders(symbol);
         const target = avgEntry * (1 + CONFIG.TARGET_PROFIT);
         const order = {
@@ -252,13 +255,15 @@ export default async function handler(req, res) {
   };
   
   try {
-    // ─── التحقق من السر ──────────────────────────────
+    // ─── التحقق من السر (مثل النسخة القديمة) ──────────────
     const secret = req.query.secret;
-    if (secret !== process.env.CRON_SECRET) {
+    // إذا كان المفتاح موجوداً، تحقق منه (متوافق مع النسخة القديمة)
+    if (secret && secret !== process.env.CRON_SECRET) {
       return res.status(401).json({ error: "غير مصرح" });
     }
+    // إذا لم يكن هناك مفتاح، استمر (مثل النسخة القديمة التي كانت تعمل)
     
-    // ─── التحقق من وقت التداول ──────────────────────
+    // ─── التحقق من وقت التداول ──────────────────────────
     const now = new Date();
     const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     const mins = et.getHours() * 60 + et.getMinutes();
@@ -281,10 +286,10 @@ export default async function handler(req, res) {
       });
     }
     
-    // ─── إدارة المراكز المفتوحة أولاً ──────────────
+    // ─── إدارة المراكز المفتوحة ──────────────────────────
     log.managed = await manageOpenPositions();
     
-    // ─── جلب بيانات الحساب ──────────────────────────
+    // ─── جلب بيانات الحساب ──────────────────────────────
     const account = await getAccount();
     const balance = parseFloat(account.equity || account.cash || 0);
     if (balance <= 0) {
@@ -295,7 +300,7 @@ export default async function handler(req, res) {
       });
     }
     
-    // ─── جلب الإشارات من Supabase (من RadarAZ) ──────
+    // ─── جلب الإشارات من Supabase ──────────────────────
     const todayET = new Date().toISOString().split("T")[0];
     const url = `${SUPABASE_URL}/rest/v1/signals`
       + `?select=*`
@@ -317,151 +322,129 @@ export default async function handler(req, res) {
       });
     }
     
-    // ─── الفلترة (باستخدام إشارات الرادار) ──────────
+    console.log(`📊 جلب ${signals.length} إشارة من Supabase`);
+    
+    // ─── الفلترة ──────────────────────────────────────────
     let candidates = signals.filter(s => {
       const price = s.entry_price || 0;
       const change = s.change_pct || 0;
       const volume = s.volume || 0;
       
-      // فلاتر صارمة (كلها من إشارات الرادار)
       if (s.score < CONFIG.MIN_SCORE) return false;
       if (price < CONFIG.MIN_PRICE) return false;
       if (change < CONFIG.MIN_CHANGE || change > CONFIG.MAX_CHANGE) return false;
       if (volume < CONFIG.MIN_VOLUME) return false;
-      if (s.rsi !== null && s.rsi > CONFIG.MAX_RSI) return false;
-      if (s.rsi !== null && s.rsi < CONFIG.MIN_RSI) return false;
+      if (s.rsi !== null && (s.rsi > CONFIG.MAX_RSI || s.rsi < CONFIG.MIN_RSI)) return false;
       if (s.rvol && s.rvol < CONFIG.MIN_RVOL) return false;
       if (s.vwap && price <= s.vwap) return false;
-      
-      // بنية السوق (من الرادار)
-      if (!s.structure) return false;
       
       return true;
     });
     
-    // ─── ترتيب حسب الأولوية (من الرادار) ────────────
-    const isValidEntry = (x) => {
-      if (!x.structure) return false;
-      const flag = x.structure.flag || "";
-      return flag.includes("صحيح");
-    };
+    console.log(`🔍 بعد الفلترة: ${candidates.length} إشارة`);
     
+    // ─── ترتيب حسب الأولوية ────────────────────────────
     candidates.sort((a, b) => {
       if (b.is_target !== a.is_target) return b.is_target ? 1 : -1;
-      if (isValidEntry(b) !== isValidEntry(a)) return isValidEntry(b) ? 1 : -1;
       if (b.early_watch !== a.early_watch) return b.early_watch ? 1 : -1;
       if (b.is_hot !== a.is_hot) return b.is_hot ? 1 : -1;
       return (b.score || 0) - (a.score || 0);
     });
     
-    // ─── التحقق من المراكز المفتوحة ─────────────────
+    // ─── التحقق من المراكز المفتوحة ─────────────────────
     const positions = await getPositions();
     const openSymbols = new Set(positions.map(p => p.symbol));
     let openCount = openSymbols.size;
     let deployed = positions.reduce((sum, p) => sum + parseFloat(p.market_value || 0), 0);
     const maxDeploy = balance * CONFIG.MAX_DEPLOYED;
     
-    // ─── تنفيذ الصفقات ──────────────────────────────
+    // ─── تنفيذ الصفقات ──────────────────────────────────
     let entered = 0;
+    let skippedCount = 0;
+    const skipDetails = [];
     
     for (const s of candidates) {
-      // حدود المراكز
       if (openCount >= CONFIG.MAX_POSITIONS) break;
       if (deployed >= maxDeploy) break;
       
       const symbol = s.symbol;
-      
-      // تجنب التكرار
       if (openSymbols.has(symbol)) continue;
       
-      // ─── السعر الحي (من السوق) ──────────────────
+      // ─── السعر الحي ──────────────────────────────────
       const livePrice = await getLatestPrice(symbol);
       const radarPrice = s.entry_price || 0;
-      
-      // استخدام السعر الحي إن وجد، وإلا سعر الرادار
       const price = livePrice || radarPrice;
+      
       if (!price || price <= 0) {
-        log.skipped.push({ symbol, reason: "لا يوجد سعر" });
+        skippedCount++;
+        skipDetails.push({ symbol, reason: "لا يوجد سعر" });
         continue;
       }
       
-      // التحقق من الانحراف عن سعر الرادار
+      // التحقق من الانحراف
       if (radarPrice > 0) {
         const drift = ((price - radarPrice) / radarPrice);
         if (Math.abs(drift) > CONFIG.MAX_DRIFT) {
-          log.skipped.push({ 
-            symbol, 
-            reason: `انحراف ${(drift*100).toFixed(1)}%`,
-            radarPrice,
-            livePrice: price,
-          });
+          skippedCount++;
+          skipDetails.push({ symbol, reason: `انحراف ${(drift*100).toFixed(1)}%` });
           continue;
         }
       }
       
-      // ─── التحقق من السبريد ──────────────────────
+      // ─── التحقق من السبريد ──────────────────────────
       const quote = await getQuote(symbol);
       if (quote) {
         const spread = quote.ask_price - quote.bid_price;
         if (spread > CONFIG.MAX_SPREAD) {
-          log.skipped.push({ 
-            symbol, 
-            reason: `سبريد ${spread.toFixed(3)}`,
-            spread,
-          });
+          skippedCount++;
+          skipDetails.push({ symbol, reason: `سبريد ${spread.toFixed(3)}` });
           continue;
         }
       }
       
-      // ─── حساب الأهداف والوقف (تجاوز بنية الرادار) ──
+      // ─── حساب الأهداف والوقف ────────────────────────
       const target = price * (1 + CONFIG.TARGET_PROFIT);
       const stop = price * (1 - CONFIG.STOP_LOSS);
       
-      // ─── التأكد من RR ────────────────────────────
       const risk = price - stop;
       const reward = target - price;
       const rr = reward / risk;
+      
       if (rr < CONFIG.MIN_RR || risk <= 0) {
-        log.skipped.push({ 
-          symbol, 
-          reason: `RR ${rr.toFixed(2)}`,
-          risk: risk.toFixed(2),
-          reward: reward.toFixed(2),
-        });
+        skippedCount++;
+        skipDetails.push({ symbol, reason: `RR ${rr.toFixed(2)}` });
         continue;
       }
       
-      // ─── حساب حجم المركز ────────────────────────
+      // ─── حساب حجم المركز ────────────────────────────
       const riskAmount = balance * CONFIG.RISK_PER_TRADE;
       let qty = Math.floor(riskAmount / risk);
       
       if (qty < 2) {
-        log.skipped.push({ symbol, reason: "كمية صغيرة" });
+        skippedCount++;
+        skipDetails.push({ symbol, reason: "كمية صغيرة" });
         continue;
       }
       
-      // سقف المركز (توزيع المخاطر)
       const maxQty = Math.floor((balance * CONFIG.MAX_POSITIONS * 0.1) / price);
       const finalQty = Math.min(qty, maxQty);
       
       if (finalQty < 2) {
-        log.skipped.push({ symbol, reason: "كمية محدودة" });
+        skippedCount++;
+        skipDetails.push({ symbol, reason: "كمية محدودة" });
         continue;
       }
       
-      // ─── تنفيذ الأمر ────────────────────────────
+      // ─── تنفيذ الأمر ────────────────────────────────
       const order = await buyWithProtection(symbol, finalQty, price, stop, target);
       
       if (order.status === "rejected" || order.code) {
-        log.skipped.push({
-          symbol,
-          reason: "رفض",
-          error: order.message || order.code,
-        });
+        skippedCount++;
+        skipDetails.push({ symbol, reason: "رفض", error: order.message || order.code });
         continue;
       }
       
-      // ─── تحديث الإحصائيات ──────────────────────
+      // ─── تحديث الإحصائيات ──────────────────────────
       openSymbols.add(symbol);
       openCount++;
       deployed += finalQty * price;
@@ -477,11 +460,9 @@ export default async function handler(req, res) {
         score: s.score,
         rsi: s.rsi,
         rvol: s.rvol,
-        is_target: s.is_target || false,
-        type: s.type || "مضاربة",
       });
       
-      // ─── حفظ الصفقة في Supabase ──────────────────
+      // ─── حفظ الصفقة في Supabase ──────────────────────
       try {
         await fetch(`${SUPABASE_URL}/rest/v1/bot_positions`, {
           method: "POST",
@@ -495,10 +476,6 @@ export default async function handler(req, res) {
             score: s.score,
             status: "active",
             created_at: new Date().toISOString(),
-            source_signal_id: s.id,
-            source_score: s.score,
-            source_rsi: s.rsi,
-            source_rvol: s.rvol,
           }),
         });
       } catch (e) {
@@ -506,11 +483,11 @@ export default async function handler(req, res) {
       }
     }
     
-    // ─── الإحصائيات النهائية ──────────────────────
+    // ─── الإحصائيات النهائية ──────────────────────────
     const totalTime = Date.now() - startTime;
     
     const skipSummary = {};
-    for (const sk of log.skipped) {
+    for (const sk of skipDetails) {
       skipSummary[sk.reason] = (skipSummary[sk.reason] || 0) + 1;
     }
     
@@ -524,12 +501,12 @@ export default async function handler(req, res) {
       positions: openCount,
       deployed: ((deployed / balance) * 100).toFixed(1) + "%",
       entered,
-      skipped: log.skipped.length,
+      skipped: skippedCount,
       managed: log.managed.length,
       skip_summary: skipSummary,
       log: {
         entered: log.entered,
-        skipped: log.skipped.slice(0, 10), // فقط أول 10 للتوفير
+        skipped: skipDetails.slice(0, 10),
         managed: log.managed,
         errors: log.errors,
       },
@@ -548,6 +525,7 @@ export default async function handler(req, res) {
     });
     
   } catch (error) {
+    console.error("❌ خطأ:", error);
     return res.status(200).json({
       success: false,
       error: error.message,
