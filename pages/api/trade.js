@@ -1,9 +1,11 @@
-// pages/api/trade.js — MONEY MACHINE 💰 (الإصدار النهائي)
+// pages/api/trade.js — استراتيجية EV+ (قيمة متوقعة موجبة)
 // ════════════════════════════════════════════════════════════════════════
-//  ✅ الهدف: 0.7% (صفقات عادية) | 2.5% (قناص)
-//  ✅ وقف الخسارة: 0.5% (صفقات عادية) | 2% (قناص)
-//  ✅ خروج فوري (بدون تدرج)
-//  ✅ فلاتر مخففة للقبول
+//  الفلسفة: صفقات أقل + جودة أعلى + R:R لا يقل عن 2
+//  ✅ هدف 2% / وقف 1% → تحتاج 34% نجاح فقط لتربح
+//  ✅ نقل الوقف للتعادل بعد +1% (الرابحة لا تنقلب خاسرة)
+//  ✅ قاطع دائرة يومي: توقف عند -2% خسارة أو +2% ربح (قفل الربح)
+//  ✅ خروج زمني قبل الإغلاق بـ 20 دقيقة
+//  ⚠️ لا يوجد نظام يضمن ربحاً يومياً — هذا تصميم سليم رياضياً فقط
 // ════════════════════════════════════════════════════════════════════════
 
 const ALPACA_KEY    = process.env.ALPACA_KEY;
@@ -15,66 +17,44 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.RADARAZ_SUPABASE_KEY;
 
 // ════════════════════════════════════════════════════════════════════════
-//  STRATEGY — الإعدادات المعدلة (خفيفة للقبول)
+//  STRATEGY — إعدادات صارمة بقيمة متوقعة موجبة
 // ════════════════════════════════════════════════════════════════════════
 
 const STRATEGY = {
-  engine: "smart",
-  addEnabled: false,
+  engine: "ev_plus",
 
-  // ─── الفلاتر المخففة ──────────────────────────────────
-  minScore: 50,          // 60 ← 50
-  minPrice: 2,           // 3 ← 2
-  minChangePct: 0.5,     // 1.5 ← 0.5
-  maxChangePct: 25,      // 15 ← 25
-  minVolume: 80_000,     // 150K ← 80K
-  maxRSI: 80,            // 72 ← 80
-  skipChasers: false,
-  minRR: 0.8,            // 1.2 ← 0.8
-  entryBuffer: 1.03,     // 1.005 ← 1.03
-  minRoomPct: 0.005,     // 0.01 ← 0.005
+  // ─── فلاتر الدخول (صارمة عمداً) ─────────────────────
+  minScore: 68,           // جودة عالية فقط
+  minPrice: 3,            // تجنب أسهم البنس شديدة التذبذب
+  minChangePct: 1.5,      // زخم حقيقي
+  maxChangePct: 8,        // لا نلاحق سهماً انفجر بالفعل
+  minVolume: 150_000,
+  minRvol: 1.5,           // سيولة نسبية فوق المعدل
+  minRSI: 45,
+  maxRSI: 70,             // لا دخول في تشبع شرائي
+  requireAboveVWAP: true, // فوق VWAP فقط (إن توفر)
+  requireValidStructure: true, // بنية "صحيح" فقط
+  maxDriftPct: 0.02,      // السعر الحي لا يبعد أكثر من 2% عن سعر الرادار
 
-  // ─── الأهداف والوقف ──────────────────────────────────
-  TARGET_PROFIT: 0.007,  // 0.7%
-  STOP_LOSS: 0.005,      // 0.5%
+  // ─── الأهداف والوقف (R:R = 2) ───────────────────────
+  TARGET_PROFIT: 0.02,    // 2%
+  STOP_LOSS: 0.01,        // 1%
+  BREAKEVEN_TRIGGER: 0.01,   // عند +1% → انقل الوقف للتعادل
+  BREAKEVEN_OFFSET: 0.001,   // التعادل + 0.1% (تغطية العمولات/الانزلاق)
 
   // ─── إدارة المخاطر ──────────────────────────────────
-  maxLossPct: 0.05,
-  maxDriftPct: 0.08,     // 0.03 ← 0.08
-  riskPerTradePct: 0.015,
-  maxPositionPct: 0.25,
+  riskPerTradePct: 0.01,    // 1% من الرصيد مخاطرة لكل صفقة
+  maxPositionPct: 0.20,
   minPositionPct: 0.02,
-  maxDeployedPct: 0.70,
+  maxDeployedPct: 0.60,
+  maxTrades: 5,             // تركيز بدل تشتيت
 
-  // ─── الدخول/الخروج ──────────────────────────────────
-  initialFraction: 0.70,
-  tp1Fraction: 1.0,
-  tp1FillNudge: 0.998,
-  breakevenAfterTp1: false,
-  tieredExit: false,
-  trailEnabled: false,
-  trailTiers: [],
-  maxTrades: 12,
+  // ─── قاطع الدائرة اليومي ────────────────────────────
+  DAILY_MAX_LOSS_PCT: -2.0,  // توقف عن الدخول عند خسارة يومية 2%
+  DAILY_PROFIT_LOCK_PCT: 2.0, // توقف عن الدخول عند ربح يومي 2% (قفل الربح)
 
-  // ─── القناص ──────────────────────────────────────────
-  sniperEnabled: true,
-  sniper: {
-    minScore: 58,        // 68 ← 58
-    minRvol: 2,          // 3 ← 2
-    minRSI: 42,          // 50 ← 42
-    maxRSI: 75,          // 68 ← 75
-    minChange: 1,
-    maxChange: 18,
-    minVolume: 150_000,
-    stopLoss: 0.02,      // 2%
-    target1: 0.025,      // 2.5%
-    target2: 0.04,       // 4%
-    riskPerTrade: 0.012,
-    maxPosition: 0.15,
-    maxTrades: 5,
-    requireCross: false,
-    requireVCP: false,
-  },
+  // ─── الخروج الزمني ──────────────────────────────────
+  FORCE_EXIT_MINS_BEFORE_CLOSE: 20, // إغلاق كل المراكز قبل 3:40 م ET
 };
 
 // ════════════════════════════════════════════════════════════════════════
@@ -100,17 +80,6 @@ async function getAllPositions() {
     return Array.isArray(d) ? d : [];
   } catch {
     return [];
-  }
-}
-
-async function getPositionQty(sym) {
-  try {
-    const r = await fetch(`${ALPACA_BASE}/v2/positions/${sym}`, { headers: H });
-    if (!r.ok) return 0;
-    const d = await r.json();
-    return Math.abs(parseInt(d.qty)) || 0;
-  } catch {
-    return 0;
   }
 }
 
@@ -146,15 +115,6 @@ async function cancelAll(sym) {
   for (const o of oo) await cancelOrder(o.id);
 }
 
-async function buyMarket(sym, qty) {
-  const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
-    method: "POST",
-    headers: H,
-    body: JSON.stringify({ symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day" })
-  });
-  return r.json();
-}
-
 async function buyBracket(sym, qty, tp, sl) {
   const dec = (Number(tp) < 1 || Number(sl) < 1) ? 4 : 2;
   const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
@@ -172,6 +132,26 @@ async function buyBracket(sym, qty, tp, sl) {
     }),
   });
   return r.json();
+}
+
+// تحديث وقف الخسارة في أمر البراكِت المفتوح (لنقل التعادل)
+async function replaceStopOrder(sym, newStop) {
+  try {
+    const orders = await getOpenOrders(sym);
+    const stopLeg = orders
+      .flatMap(o => [o, ...(o.legs || [])])
+      .find(o => o.type === "stop" && o.side === "sell" && o.status !== "filled");
+    if (!stopLeg) return false;
+    const dec = newStop < 1 ? 4 : 2;
+    const r = await fetch(`${ALPACA_BASE}/v2/orders/${stopLeg.id}`, {
+      method: "PATCH",
+      headers: H,
+      body: JSON.stringify({ stop_price: Number(newStop).toFixed(dec) }),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function closePosition(sym) {
@@ -212,86 +192,56 @@ async function planClose(sym) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  دوال حسابية
+//  قاطع الدائرة اليومي — حساب أداء اليوم من Alpaca
 // ════════════════════════════════════════════════════════════════════════
 
-function calcSMA(prices, period) {
-  if (!prices || prices.length < period) return null;
-  const slice = prices.slice(-period);
-  return slice.reduce((a, b) => a + b, 0) / period;
-}
-
-function isFreshCross(closes, fast = 9, slow = 21) {
-  if (!closes || closes.length < slow + 2) return false;
-  const fastMA = calcSMA(closes, fast);
-  const slowMA = calcSMA(closes, slow);
-  const fastPrev = calcSMA(closes.slice(0, -1), fast);
-  const slowPrev = calcSMA(closes.slice(0, -1), slow);
-  if (!fastMA || !slowMA || !fastPrev || !slowPrev) return false;
-  return fastPrev <= slowPrev && fastMA > slowMA;
-}
-
-async function fetchHourlyBars(symbol) {
-  try {
-    const to = new Date().toISOString().slice(0, 10);
-    const from = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10);
-    const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/hour/${from}/${to}?adjusted=true&sort=asc&limit=120&apiKey=${process.env.POLYGON_API_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return (data.results && data.results.length) ? data.results : null;
-  } catch {
-    return null;
-  }
+async function getDailyPnlPct(acct) {
+  const equity = parseFloat(acct.equity || 0);
+  const lastEquity = parseFloat(acct.last_equity || 0);
+  if (!equity || !lastEquity) return 0;
+  return ((equity - lastEquity) / lastEquity) * 100;
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  suitableEntry — المعدلة (خفيفة للقبول)
+//  إدارة المراكز المفتوحة
+//  - نقل الوقف للتعادل بعد +1%
+//  - خروج زمني قبل الإغلاق
+//  (الهدف والوقف الأساسيان يديرهما أمر البراكِت لدى Alpaca — أدق من polling)
 // ════════════════════════════════════════════════════════════════════════
 
-function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
-  if (!st || !price || !t1 || !stopPx) return false;
-  const risk = price - stopPx;
-  if (risk <= 0) return false;
-  const rr = (t1 - price) / risk;
-  
-  // ✅ تخفيف الشروط للقبول
-  return price > st.support * 0.97 &&      // 0.97 بدلاً من 1.0
-         price <= st.confirm * 1.03 &&     // 1.03 بدلاً من 1.005
-         t1 >= price * 1.005 &&            // 1.005 بدلاً من 1.01
-         rr >= 0.8;                        // 0.8 بدلاً من 1.2
-}
-
-// ════════════════════════════════════════════════════════════════════════
-//  إدارة المراكز المفتوحة (مبسطة)
-// ════════════════════════════════════════════════════════════════════════
-
-async function manageOpenPositions() {
+async function manageOpenPositions(forceExit) {
   const results = [];
   try {
     const positions = await getAllPositions();
-    if (!Array.isArray(positions) || positions.length === 0) return results;
+    if (!positions.length) return results;
+
+    const plans = await planList();
+    const planMap = new Map(plans.map(p => [p.symbol, p]));
 
     for (const pos of positions) {
       const symbol = pos.symbol;
       const currentPrice = parseFloat(pos.current_price);
       const avgEntry = parseFloat(pos.avg_entry_price);
       const pnlPct = ((currentPrice - avgEntry) / avgEntry) * 100;
+      const plan = planMap.get(symbol);
 
-      // 🎯 هدف 0.7% → خروج فوري
-      if (pnlPct >= 0.7) {
+      // ⏰ خروج زمني قبل الإغلاق — لا نبيّت مراكز مضاربة يومية
+      if (forceExit) {
         await cancelAll(symbol);
         await closePosition(symbol);
-        results.push({ symbol, action: "✅ هدف 0.7%", pnl: pnlPct.toFixed(2) + "%" });
+        await planClose(symbol);
+        results.push({ symbol, action: "⏰ خروج زمني قبل الإغلاق", pnl: pnlPct.toFixed(2) + "%" });
         continue;
       }
 
-      // 🛑 وقف 0.5% → خروج فوري
-      if (pnlPct <= -0.5) {
-        await cancelAll(symbol);
-        await closePosition(symbol);
-        results.push({ symbol, action: "🛑 وقف 0.5%", pnl: pnlPct.toFixed(2) + "%" });
-        continue;
+      // 🔒 نقل الوقف للتعادل بعد +1%
+      if (plan && !plan.be_moved && pnlPct >= STRATEGY.BREAKEVEN_TRIGGER * 100) {
+        const newStop = avgEntry * (1 + STRATEGY.BREAKEVEN_OFFSET);
+        const ok = await replaceStopOrder(symbol, newStop);
+        if (ok) {
+          await planSave({ ...plan, be_moved: true, stop: +newStop.toFixed(4) });
+          results.push({ symbol, action: "🔒 وقف → تعادل", pnl: pnlPct.toFixed(2) + "%" });
+        }
       }
     }
   } catch (error) {
@@ -306,7 +256,7 @@ async function manageOpenPositions() {
 
 export default async function handler(req, res) {
   try {
-    const log = { managed: [], entered: [], skipped: [], sniper: [] };
+    const log = { managed: [], entered: [], skipped: [] };
     const debug = { phase: "manage_only" };
 
     const now = new Date();
@@ -315,9 +265,14 @@ export default async function handler(req, res) {
     const day = et.getDay();
     const weekend = day === 0 || day === 6;
 
-    // 9:30 ص - 4:00 م (بتوقيت نيويورك)
-    const canManage = !weekend && mins >= 570 && mins <= 960;
-    const canEnter = !weekend && mins >= 585 && mins < 945;
+    const MARKET_OPEN = 570;   // 9:30
+    const MARKET_CLOSE = 960;  // 16:00
+    const forceExitAt = MARKET_CLOSE - STRATEGY.FORCE_EXIT_MINS_BEFORE_CLOSE; // 15:40
+
+    const canManage = !weekend && mins >= MARKET_OPEN && mins <= MARKET_CLOSE;
+    // لا دخول في أول 15 دقيقة (تذبذب الافتتاح) ولا بعد 2:30 م (لا وقت كافٍ للهدف)
+    const canEnterWindow = !weekend && mins >= MARKET_OPEN + 15 && mins < 870;
+    const forceExit = !weekend && mins >= forceExitAt;
 
     if (!canManage) {
       return res.status(200).json({
@@ -328,16 +283,28 @@ export default async function handler(req, res) {
     }
 
     // ═══ المرحلة 1: إدارة المراكز المفتوحة ═══
-    log.managed = await manageOpenPositions();
+    log.managed = await manageOpenPositions(forceExit);
+
+    // ═══ قاطع الدائرة اليومي ═══
+    const acct = await getAccount();
+    const dailyPnl = await getDailyPnlPct(acct);
+    debug.daily_pnl_pct = +dailyPnl.toFixed(2);
+
+    let circuitBreaker = null;
+    if (dailyPnl <= STRATEGY.DAILY_MAX_LOSS_PCT) {
+      circuitBreaker = `🛑 قاطع الدائرة: خسارة يومية ${dailyPnl.toFixed(2)}% — لا دخول جديد اليوم`;
+    } else if (dailyPnl >= STRATEGY.DAILY_PROFIT_LOCK_PCT) {
+      circuitBreaker = `🔒 قفل الربح: ربح يومي ${dailyPnl.toFixed(2)}% — تم تحقيق هدف اليوم`;
+    }
 
     // ═══ المرحلة 2: دخول صفقات جديدة ═══
-    if (canEnter) {
-      const todayET = new Date().toISOString().split("T")[0];
+    if (canEnterWindow && !forceExit && !circuitBreaker) {
+      const todayET = et.toISOString().split("T")[0];
       let candidates = [];
 
       try {
         const sr = await fetch(
-          `${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&order=score.desc&limit=100`,
+          `${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&score=gte.${STRATEGY.minScore}&order=score.desc&limit=100`,
           { headers: SB_H }
         );
         if (sr.ok) {
@@ -346,28 +313,27 @@ export default async function handler(req, res) {
         }
       } catch {}
 
+      // ─── الفلاتر الصارمة ──────────────────────────────
       const filtered = candidates.filter(s => {
         if (s.score < STRATEGY.minScore) return false;
         if (s.price < STRATEGY.minPrice) return false;
         if (s.change_pct < STRATEGY.minChangePct || s.change_pct > STRATEGY.maxChangePct) return false;
         if (s.volume < STRATEGY.minVolume) return false;
-        if (s.rsi != null && s.rsi > STRATEGY.maxRSI) return false;
-        if (s.vwap && s.price <= s.vwap) return false;
+        if (s.rvol != null && s.rvol < STRATEGY.minRvol) return false;
+        if (s.rsi != null && (s.rsi < STRATEGY.minRSI || s.rsi > STRATEGY.maxRSI)) return false;
+        if (STRATEGY.requireAboveVWAP && s.vwap && s.price <= s.vwap) return false;
         if (!s.structure || s.structure.stop == null || s.structure.t1 == null) return false;
         const f = s.structure.flag || "";
-        if (STRATEGY.skipChasers && (f.indexOf("ملاحقة") >= 0 || f.indexOf("غير مؤكد") >= 0 || f.indexOf("هابط") >= 0)) return false;
+        if (STRATEGY.requireValidStructure && f.indexOf("صحيح") < 0) return false;
+        if (f.indexOf("ملاحقة") >= 0 || f.indexOf("غير مؤكد") >= 0 || f.indexOf("هابط") >= 0) return false;
         return true;
       });
 
-      const validEntry = x => x.structure && (x.structure.flag || "").indexOf("صحيح") >= 0;
       filtered.sort((a, b) => {
         if (!!b.is_target !== !!a.is_target) return b.is_target ? 1 : -1;
-        if (validEntry(b) !== validEntry(a)) return validEntry(b) ? 1 : -1;
-        if (!!b.early_watch !== !!a.early_watch) return b.early_watch ? 1 : -1;
         return (b.score || 0) - (a.score || 0);
       });
 
-      const acct = await getAccount();
       const balance = parseFloat(acct.equity || acct.cash || 0);
       const positions = await getAllPositions();
       const activePlans = await planList();
@@ -380,117 +346,29 @@ export default async function handler(req, res) {
         if (openCount >= STRATEGY.maxTrades) break;
         if (openSymbols.has(s.symbol)) continue;
 
-        const st = s.structure;
         const live = await getLatestPrice(s.symbol);
-        const px = live || s.price;
+        const px = live || Number(s.price);
         if (!px) {
           log.skipped.push({ symbol: s.symbol, reason: "لا يوجد سعر" });
           continue;
         }
 
-        // ─── كشف القناص ──────────────────────────────────
-        let isSniper = false;
-        let sniperStopPx = 0;
-        let sniperT1 = 0;
-        let sniperT2 = 0;
-        let sniperRisk = STRATEGY.riskPerTradePct;
-
-        if (STRATEGY.sniperEnabled) {
-          let freshCross = false;
-          try {
-            const hourlyBars = await fetchHourlyBars(s.symbol);
-            if (hourlyBars && hourlyBars.length > 21) {
-              const hourlyCloses = hourlyBars.map(b => b.c);
-              freshCross = isFreshCross(hourlyCloses, 9, 21);
-            }
-          } catch {}
-
-          const sniperConditions = {
-            score: s.score >= STRATEGY.sniper.minScore,
-            rvol: s.rvol >= STRATEGY.sniper.minRvol,
-            rsi: s.rsi >= STRATEGY.sniper.minRSI && s.rsi <= STRATEGY.sniper.maxRSI,
-            change: s.change_pct >= STRATEGY.sniper.minChange && s.change_pct <= STRATEGY.sniper.maxChange,
-            volume: s.volume >= STRATEGY.sniper.minVolume,
-            cross: !STRATEGY.sniper.requireCross || freshCross,
-          };
-
-          if (Object.values(sniperConditions).every(v => v === true)) {
-            isSniper = true;
-            sniperStopPx = px * (1 - STRATEGY.sniper.stopLoss);
-            sniperT1 = px * (1 + STRATEGY.sniper.target1);
-            sniperT2 = px * (1 + STRATEGY.sniper.target2);
-            sniperRisk = STRATEGY.sniper.riskPerTrade;
-            log.sniper.push({ symbol: s.symbol, score: s.score, rvol: s.rvol, rsi: s.rsi, cross: freshCross });
-          }
-        }
-
-        // ─── حساب الأهداف ────────────────────────────────
+        // السعر الحي لا يبعد كثيراً عن سعر الرادار (منع الملاحقة)
         const radarPx = Number(s.price) || px;
-        const driftPct = ((px - radarPx) / radarPx) * 100;
-        if (driftPct > STRATEGY.maxDriftPct * 100) {
-          log.skipped.push({ symbol: s.symbol, reason: `سعر متأخر ${driftPct.toFixed(1)}%` });
+        const drift = (px - radarPx) / radarPx;
+        if (drift > STRATEGY.maxDriftPct) {
+          log.skipped.push({ symbol: s.symbol, reason: `سعر متأخر ${(drift * 100).toFixed(1)}%` });
           continue;
         }
 
-        const support = Number(st.support != null ? st.support : radarPx * 0.97);
-        const confirm = Number(st.confirm != null ? st.confirm : radarPx);
-
-        let t1, t3, stopPx;
-
-        if (isSniper) {
-          // 🎯 القناص: هدف 2.5%، وقف 2%
-          stopPx = sniperStopPx;
-          t1 = sniperT1;
-          t3 = sniperT2;
-        } else {
-          // 🎯 العادي: هدف 0.7%، وقف 0.5%
-          stopPx = px * (1 - STRATEGY.STOP_LOSS);
-          t1 = px * (1 + STRATEGY.TARGET_PROFIT);
-          t3 = px * (1 + STRATEGY.TARGET_PROFIT * 2);
-        }
-
-        // ─── التأكد من صحة الوقف ────────────────────────
-        if (stopPx > 0 && px <= stopPx) {
-          log.skipped.push({ symbol: s.symbol, reason: `ضرب الوقف (${stopPx.toFixed(2)})` });
-          continue;
-        }
-
-        // ─── حساب RR ──────────────────────────────────────
-        const rrLive = (px - stopPx) > 0 ? (t1 - px) / (px - stopPx) : 0;
-        if (rrLive < STRATEGY.minRR) {
-          log.skipped.push({ symbol: s.symbol, reason: `R:R ${rrLive.toFixed(1)}` });
-          continue;
-        }
-
-        // ─── التأكد من منطقة الدخول (باستخدام suitableEntry المعدلة) ──
-        const stLive = { ...st, support, confirm, t1, stop: stopPx, t3, rr: +rrLive.toFixed(2), entry: px };
-        if (!suitableEntry(stLive, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
-          log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول" });
-          continue;
-        }
-
+        // ─── الأهداف: R:R = 2 ثابت ─────────────────────
+        const stopPx = px * (1 - STRATEGY.STOP_LOSS);
+        const t1 = px * (1 + STRATEGY.TARGET_PROFIT);
         const riskPerShare = px - stopPx;
-        if (riskPerShare <= 0) {
-          log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" });
-          continue;
-        }
 
-        // ─── حساب حجم المركز ──────────────────────────────
-        let qualityMult = 1.0;
-        const sc = Number(s.score) || 60;
-        if (sc >= 85) qualityMult = 1.6;
-        else if (sc >= 75) qualityMult = 1.35;
-        else if (sc >= 68) qualityMult = 1.15;
-        else qualityMult = 0.85;
-        if (s.vcp) qualityMult += 0.15;
-        if (s.fresh_zone) qualityMult += 0.10;
-        if (isSniper) qualityMult *= 1.1;
-
-        const tradeRiskPct = isSniper ? sniperRisk : STRATEGY.riskPerTradePct;
-        let fullValue = (balance * tradeRiskPct) * px / riskPerShare;
-        fullValue = fullValue * qualityMult;
-        const maxPosPct = isSniper ? STRATEGY.sniper.maxPosition : STRATEGY.maxPositionPct;
-        fullValue = Math.min(fullValue, balance * maxPosPct);
+        // ─── حجم المركز: مخاطرة 1% من الرصيد ───────────
+        let fullValue = (balance * STRATEGY.riskPerTradePct) * px / riskPerShare;
+        fullValue = Math.min(fullValue, balance * STRATEGY.maxPositionPct);
 
         if (fullValue < balance * STRATEGY.minPositionPct) {
           log.skipped.push({ symbol: s.symbol, reason: "تحت أرضية المركز" });
@@ -501,78 +379,66 @@ export default async function handler(req, res) {
           break;
         }
 
-        const fullQty = Math.floor(fullValue / px);
-        if (fullQty < 2) {
+        const qty = Math.floor(fullValue / px);
+        if (qty < 2) {
           log.skipped.push({ symbol: s.symbol, reason: "كمية صغيرة" });
           continue;
         }
 
-        const initialQty = Math.max(1, Math.floor(fullQty * STRATEGY.initialFraction));
-
-        // ─── تنفيذ الأمر ──────────────────────────────────
-        const buy = await buyBracket(s.symbol, initialQty, t1, stopPx);
+        // ─── تنفيذ الأمر (براكِت: الهدف والوقف لدى Alpaca) ─
+        const buy = await buyBracket(s.symbol, qty, t1, stopPx);
         if (buy.status === "rejected" || buy.code) {
           log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت", err: buy.message || null });
           continue;
         }
 
-        // ─── حفظ الخطة ────────────────────────────────────
-        const plan = {
+        await planSave({
           symbol: s.symbol,
           status: "active",
-          initial_qty: initialQty,
-          add_qty: 0,
-          added: false,
-          add_enabled: false,
-          total_qty: initialQty,
+          initial_qty: qty,
+          total_qty: qty,
           avg_entry: px,
-          stop: stopPx,
-          t1: t1,
-          t3: t3,
-          support: support,
-          confirm: confirm,
-          tp1_done: false,
+          stop: +stopPx.toFixed(4),
+          t1: +t1.toFixed(4),
           be_moved: false,
-          stock_type: isSniper ? "صياد 🎯" : (s.type || "مضاربة"),
-          t1_sell_frac: 1.0,
-          is_sniper: isSniper,
-        };
-        await planSave(plan);
+          stock_type: s.type || "مضاربة",
+          is_sniper: false,
+        });
 
-        deployed += initialQty * px;
+        deployed += qty * px;
         openCount++;
         openSymbols.add(s.symbol);
 
         log.entered.push({
           symbol: s.symbol,
-          type: isSniper ? "SNIPER 🎯" : "REGULAR",
           px: +px.toFixed(2),
-          initialQty,
+          qty,
           stop: +stopPx.toFixed(2),
-          tp1: +t1.toFixed(2),
-          rr: +((t1 - px) / (px - stopPx)).toFixed(2),
+          tp: +t1.toFixed(2),
+          rr: 2.0,
+          score: s.score,
         });
       }
 
-      // ─── إحصائيات الرفض ──────────────────────────────
       const skipTally = {};
       for (const sk of log.skipped) skipTally[sk.reason] = (skipTally[sk.reason] || 0) + 1;
 
       debug.phase = "enter";
       debug.candidates = candidates.length;
       debug.after_filter = filtered.length;
-      debug.max_trades = STRATEGY.maxTrades;
       debug.entered = log.entered.length;
-      debug.skipped = log.skipped.length;
       debug.skip_reasons = skipTally;
-      debug.sniper_candidates = log.sniper.length;
       debug.deployed_pct = balance > 0 ? Math.round((deployed / balance) * 100) : 0;
+    } else if (circuitBreaker) {
+      debug.phase = "circuit_breaker";
+      debug.message = circuitBreaker;
     }
 
     return res.status(200).json({
       success: true,
       engine: STRATEGY.engine,
       time_et: `${et.getHours()}:${String(et.getMinutes()).padStart(2, "0")}`,
+      circuit_breaker: circuitBreaker,
       debug,
       ...log,
     });
@@ -582,7 +448,6 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: false,
       error: e.message,
-      stack: process.env.NODE_ENV === "development" ? e.stack : undefined,
     });
   }
 }
