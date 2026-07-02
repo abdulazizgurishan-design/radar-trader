@@ -1,9 +1,9 @@
-// pages/api/trade.js — MONEY MACHINE 💰 (معدل حسب الاتفاق)
+// pages/api/trade.js — MONEY MACHINE 💰 (الإصدار النهائي)
 // ════════════════════════════════════════════════════════════════════════
-//  ✅ الهدف: 0.7% (صفقات عادية) | 2% (قناص)
-//  ✅ وقف الخسارة: 0.5% (صفقات عادية) | 1.5% (قناص)
+//  ✅ الهدف: 0.7% (صفقات عادية) | 2.5% (قناص)
+//  ✅ وقف الخسارة: 0.5% (صفقات عادية) | 2% (قناص)
 //  ✅ خروج فوري (بدون تدرج)
-//  ✅ عدد صفقات أكثر (10-15 باليوم)
+//  ✅ فلاتر مخففة للقبول
 // ════════════════════════════════════════════════════════════════════════
 
 const ALPACA_KEY    = process.env.ALPACA_KEY;
@@ -15,66 +15,64 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.RADARAZ_SUPABASE_KEY;
 
 // ════════════════════════════════════════════════════════════════════════
-//  STRATEGY — الإعدادات المعدلة حسب الاتفاق
+//  STRATEGY — الإعدادات المعدلة (خفيفة للقبول)
 // ════════════════════════════════════════════════════════════════════════
 
 const STRATEGY = {
   engine: "smart",
-  addEnabled: false,                    // إلغاء التدرج
+  addEnabled: false,
 
-  // ─── الإعدادات الأساسية ──────────────────────────────
-  minScore: 60,                         // 55 ← 60
-  minPrice: 3,
-  minChangePct: 1.5,                    // 1 ← 1.5
-  maxChangePct: 15,                     // 40 ← 15
-  minVolume: 150_000,                   // 100K ← 150K
-  maxRSI: 72,                           // 75 ← 72
-  skipChasers: true,
-  minRR: 1.2,                           // 1.0 ← 1.2
-  entryBuffer: 1.005,
-  minRoomPct: 0.01,
+  // ─── الفلاتر المخففة ──────────────────────────────────
+  minScore: 50,          // 60 ← 50
+  minPrice: 2,           // 3 ← 2
+  minChangePct: 0.5,     // 1.5 ← 0.5
+  maxChangePct: 25,      // 15 ← 25
+  minVolume: 80_000,     // 150K ← 80K
+  maxRSI: 80,            // 72 ← 80
+  skipChasers: false,
+  minRR: 0.8,            // 1.2 ← 0.8
+  entryBuffer: 1.03,     // 1.005 ← 1.03
+  minRoomPct: 0.005,     // 0.01 ← 0.005
 
-  // ─── الأهداف والوقف (حسب الاتفاق) ────────────────────
-  TARGET_PROFIT: 0.007,                 // 0.7% (صفقات عادية)
-  STOP_LOSS: 0.005,                     // 0.5% (صفقات عادية)
+  // ─── الأهداف والوقف ──────────────────────────────────
+  TARGET_PROFIT: 0.007,  // 0.7%
+  STOP_LOSS: 0.005,      // 0.5%
 
   // ─── إدارة المخاطر ──────────────────────────────────
   maxLossPct: 0.05,
-  maxDriftPct: 0.03,
+  maxDriftPct: 0.08,     // 0.03 ← 0.08
   riskPerTradePct: 0.015,
   maxPositionPct: 0.25,
-  minPositionPct: 0.03,
+  minPositionPct: 0.02,
   maxDeployedPct: 0.70,
 
-  // ─── الدخول/الخروج (مبسط) ──────────────────────────
+  // ─── الدخول/الخروج ──────────────────────────────────
   initialFraction: 0.70,
   tp1Fraction: 1.0,
   tp1FillNudge: 0.998,
   breakevenAfterTp1: false,
-  tieredExit: false,                    // إلغاء التدرج
-  scalpT1Sell: 1.0,
-  investT1Sell: 1.0,
-  trailEnabled: false,                  // إلغاء التتبع
+  tieredExit: false,
+  trailEnabled: false,
   trailTiers: [],
-  maxTrades: 10,                        // 8 ← 10
+  maxTrades: 12,
 
   // ─── القناص ──────────────────────────────────────────
   sniperEnabled: true,
   sniper: {
-    minScore: 68,
-    minRvol: 3,                         // 4 ← 3
-    minRSI: 50,
-    maxRSI: 68,                         // 65 ← 68
-    minChange: 2,
-    maxChange: 12,                      // 15 ← 12
-    minVolume: 300_000,                 // 500K ← 300K
-    stopLoss: 0.015,                    // 0.04 ← 0.015 (1.5%)
-    target1: 0.02,                      // 0.035 ← 0.02 (2%)
-    target2: 0.035,                     // 0.06 ← 0.035
+    minScore: 58,        // 68 ← 58
+    minRvol: 2,          // 3 ← 2
+    minRSI: 42,          // 50 ← 42
+    maxRSI: 75,          // 68 ← 75
+    minChange: 1,
+    maxChange: 18,
+    minVolume: 150_000,
+    stopLoss: 0.02,      // 2%
+    target1: 0.025,      // 2.5%
+    target2: 0.04,       // 4%
     riskPerTrade: 0.012,
     maxPosition: 0.15,
-    maxTrades: 5,                       // 4 ← 5
-    requireCross: true,
+    maxTrades: 5,
+    requireCross: false,
     requireVCP: false,
   },
 };
@@ -247,15 +245,21 @@ async function fetchHourlyBars(symbol) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════
+//  suitableEntry — المعدلة (خفيفة للقبول)
+// ════════════════════════════════════════════════════════════════════════
+
 function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
   if (!st || !price || !t1 || !stopPx) return false;
   const risk = price - stopPx;
   if (risk <= 0) return false;
   const rr = (t1 - price) / risk;
-  return price > st.support &&
-         price <= st.confirm * buffer &&
-         t1 >= price * (1 + minRoom) &&
-         rr >= minRR;
+  
+  // ✅ تخفيف الشروط للقبول
+  return price > st.support * 0.97 &&      // 0.97 بدلاً من 1.0
+         price <= st.confirm * 1.03 &&     // 1.03 بدلاً من 1.005
+         t1 >= price * 1.005 &&            // 1.005 بدلاً من 1.01
+         rr >= 0.8;                        // 0.8 بدلاً من 1.2
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -434,7 +438,7 @@ export default async function handler(req, res) {
         let t1, t3, stopPx;
 
         if (isSniper) {
-          // 🎯 القناص: هدف 2%، وقف 1.5%
+          // 🎯 القناص: هدف 2.5%، وقف 2%
           stopPx = sniperStopPx;
           t1 = sniperT1;
           t3 = sniperT2;
@@ -458,7 +462,7 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // ─── التأكد من منطقة الدخول ──────────────────────
+        // ─── التأكد من منطقة الدخول (باستخدام suitableEntry المعدلة) ──
         const stLive = { ...st, support, confirm, t1, stop: stopPx, t3, rr: +rrLive.toFixed(2), entry: px };
         if (!suitableEntry(stLive, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
           log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول" });
