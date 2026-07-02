@@ -78,8 +78,6 @@ function getTradingSession() {
       maxRSI: CONFIG.MAX_RSI,
       minRR: CONFIG.MIN_RR,
       maxResults: CONFIG.MAX_RESULTS,
-      stopLoss: CONFIG.STOP_LOSS,
-      target1: CONFIG.TARGET_PROFIT,
     };
   } else if (isSession2) {
     session = "session2";
@@ -95,8 +93,6 @@ function getTradingSession() {
       maxRSI: CONFIG.MAX_RSI - 2,
       minRR: CONFIG.MIN_RR,
       maxResults: Math.min(CONFIG.MAX_RESULTS - 5, 15),
-      stopLoss: CONFIG.STOP_LOSS,
-      target1: CONFIG.TARGET_PROFIT,
     };
   }
   
@@ -117,6 +113,11 @@ function isTradingWindow() {
   const minutesEnd = TRADING_END_HOUR_ET * 60 + TRADING_END_MIN_ET;
   return minutesNow >= minutesStart && minutesNow < minutesEnd;
 }
+
+// ─── Vercel Hobby: حد 10 ثوانٍ ────────────────────────────
+export const config = {
+  maxDuration: 10,
+};
 
 // ─── الدالة الرئيسية ──────────────────────────────────────
 export default async function handler(req, res) {
