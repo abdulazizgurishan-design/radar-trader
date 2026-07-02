@@ -1,4 +1,9 @@
-// pages/api/trade.js — v11 (MONEY MACHINE 💰)
+// pages/api/trade.js — MONEY MACHINE 💰 (معدل حسب الاتفاق)
+// ════════════════════════════════════════════════════════════════════════
+//  ✅ الهدف: 0.7% (صفقات عادية) | 2% (قناص)
+//  ✅ وقف الخسارة: 0.5% (صفقات عادية) | 1.5% (قناص)
+//  ✅ خروج فوري (بدون تدرج)
+//  ✅ عدد صفقات أكثر (10-15 باليوم)
 // ════════════════════════════════════════════════════════════════════════
 
 const ALPACA_KEY    = process.env.ALPACA_KEY;
@@ -9,87 +14,160 @@ const ALPACA_DATA   = "https://data.alpaca.markets";
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.RADARAZ_SUPABASE_KEY;
 
+// ════════════════════════════════════════════════════════════════════════
+//  STRATEGY — الإعدادات المعدلة حسب الاتفاق
+// ════════════════════════════════════════════════════════════════════════
+
 const STRATEGY = {
   engine: "smart",
-  addEnabled: true,
+  addEnabled: false,                    // إلغاء التدرج
 
   // ─── الإعدادات الأساسية ──────────────────────────────
-  minScore: 55,
+  minScore: 60,                         // 55 ← 60
   minPrice: 3,
-  minChangePct: 1,
-  maxChangePct: 40,
-  minVolume: 100_000,
-  maxRSI: 75,
+  minChangePct: 1.5,                    // 1 ← 1.5
+  maxChangePct: 15,                     // 40 ← 15
+  minVolume: 150_000,                   // 100K ← 150K
+  maxRSI: 72,                           // 75 ← 72
   skipChasers: true,
-  minRR: 1.0,
-  entryBuffer: 1.01,
-  minRoomPct: 0.015,
+  minRR: 1.2,                           // 1.0 ← 1.2
+  entryBuffer: 1.005,
+  minRoomPct: 0.01,
+
+  // ─── الأهداف والوقف (حسب الاتفاق) ────────────────────
+  TARGET_PROFIT: 0.007,                 // 0.7% (صفقات عادية)
+  STOP_LOSS: 0.005,                     // 0.5% (صفقات عادية)
 
   // ─── إدارة المخاطر ──────────────────────────────────
-  maxLossPct: 0.07,
-  maxDriftPct: 0.05,
+  maxLossPct: 0.05,
+  maxDriftPct: 0.03,
   riskPerTradePct: 0.015,
-  maxPositionPct: 0.28,
-  minPositionPct: 0.04,
-  maxDeployedPct: 0.85,
+  maxPositionPct: 0.25,
+  minPositionPct: 0.03,
+  maxDeployedPct: 0.70,
 
-  // ─── الدخول/الخروج ──────────────────────────────────
-  initialFraction: 0.60,
+  // ─── الدخول/الخروج (مبسط) ──────────────────────────
+  initialFraction: 0.70,
   tp1Fraction: 1.0,
   tp1FillNudge: 0.998,
-  breakevenAfterTp1: true,
-  tieredExit: true,
-  scalpT1Sell: 0.50,
-  investT1Sell: 0.33,
-  trailEnabled: true,
-  trailTiers: [
-    { gain: 0.03, lock: 0.00 },
-    { gain: 0.06, lock: 0.03 },
-    { gain: 0.10, lock: 0.06 },
-    { gain: 0.15, lock: 0.10 },
-    { gain: 0.22, lock: 0.15 },
-  ],
-  maxTrades: 8,
+  breakevenAfterTp1: false,
+  tieredExit: false,                    // إلغاء التدرج
+  scalpT1Sell: 1.0,
+  investT1Sell: 1.0,
+  trailEnabled: false,                  // إلغاء التتبع
+  trailTiers: [],
+  maxTrades: 10,                        // 8 ← 10
 
+  // ─── القناص ──────────────────────────────────────────
   sniperEnabled: true,
   sniper: {
     minScore: 68,
-    minRvol: 4,
+    minRvol: 3,                         // 4 ← 3
     minRSI: 50,
-    maxRSI: 65,
+    maxRSI: 68,                         // 65 ← 68
     minChange: 2,
-    maxChange: 15,
-    minVolume: 500_000,
-    stopLoss: 0.04,
-    target1: 0.035,
-    target2: 0.06,
-    riskPerTrade: 0.01,
-    maxPosition: 0.12,
-    maxTrades: 4,
+    maxChange: 12,                      // 15 ← 12
+    minVolume: 300_000,                 // 500K ← 300K
+    stopLoss: 0.015,                    // 0.04 ← 0.015 (1.5%)
+    target1: 0.02,                      // 0.035 ← 0.02 (2%)
+    target2: 0.035,                     // 0.06 ← 0.035
+    riskPerTrade: 0.012,
+    maxPosition: 0.15,
+    maxTrades: 5,                       // 4 ← 5
     requireCross: true,
     requireVCP: false,
   },
 };
 
+// ════════════════════════════════════════════════════════════════════════
+//  HEADERS
+// ════════════════════════════════════════════════════════════════════════
+
 const H    = { "APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET, "Content-Type": "application/json" };
 const SB_H = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" };
 
-// ───────── Alpaca ─────────
-async function getAccount()        { const r = await fetch(`${ALPACA_BASE}/v2/account`, { headers: H }); return r.json(); }
-async function getAllPositions()   { try { const r = await fetch(`${ALPACA_BASE}/v2/positions`, { headers: H }); const d = await r.json(); return Array.isArray(d) ? d : []; } catch { return []; } }
-async function getPositionQty(sym) { try { const r = await fetch(`${ALPACA_BASE}/v2/positions/${sym}`, { headers: H }); if (!r.ok) return 0; const d = await r.json(); return Math.abs(parseInt(d.qty)) || 0; } catch { return 0; } }
-async function getLatestPrice(sym) { try { const r = await fetch(`${ALPACA_DATA}/v2/stocks/${sym}/trades/latest`, { headers: H }); if (!r.ok) return null; const d = await r.json(); return d?.trade?.p ?? null; } catch { return null; } }
-async function getOpenOrders(sym)  { try { const r = await fetch(`${ALPACA_BASE}/v2/orders?status=open&symbols=${sym}&nested=true`, { headers: H }); const d = await r.json(); return Array.isArray(d) ? d : []; } catch { return []; } }
-async function cancelOrder(id)     { try { await fetch(`${ALPACA_BASE}/v2/orders/${id}`, { method: "DELETE", headers: H }); } catch {} }
-async function cancelAll(sym)      { const oo = await getOpenOrders(sym); for (const o of oo) await cancelOrder(o.id); }
-async function buyMarket(sym, qty) { const r = await fetch(`${ALPACA_BASE}/v2/orders`, { method: "POST", headers: H, body: JSON.stringify({ symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day" }) }); return r.json(); }
+// ════════════════════════════════════════════════════════════════════════
+//  دوال Alpaca
+// ════════════════════════════════════════════════════════════════════════
+
+async function getAccount() {
+  const r = await fetch(`${ALPACA_BASE}/v2/account`, { headers: H });
+  return r.json();
+}
+
+async function getAllPositions() {
+  try {
+    const r = await fetch(`${ALPACA_BASE}/v2/positions`, { headers: H });
+    const d = await r.json();
+    return Array.isArray(d) ? d : [];
+  } catch {
+    return [];
+  }
+}
+
+async function getPositionQty(sym) {
+  try {
+    const r = await fetch(`${ALPACA_BASE}/v2/positions/${sym}`, { headers: H });
+    if (!r.ok) return 0;
+    const d = await r.json();
+    return Math.abs(parseInt(d.qty)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function getLatestPrice(sym) {
+  try {
+    const r = await fetch(`${ALPACA_DATA}/v2/stocks/${sym}/trades/latest`, { headers: H });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d?.trade?.p ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function getOpenOrders(sym) {
+  try {
+    const r = await fetch(`${ALPACA_BASE}/v2/orders?status=open&symbols=${sym}&nested=true`, { headers: H });
+    const d = await r.json();
+    return Array.isArray(d) ? d : [];
+  } catch {
+    return [];
+  }
+}
+
+async function cancelOrder(id) {
+  try {
+    await fetch(`${ALPACA_BASE}/v2/orders/${id}`, { method: "DELETE", headers: H });
+  } catch {}
+}
+
+async function cancelAll(sym) {
+  const oo = await getOpenOrders(sym);
+  for (const o of oo) await cancelOrder(o.id);
+}
+
+async function buyMarket(sym, qty) {
+  const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day" })
+  });
+  return r.json();
+}
 
 async function buyBracket(sym, qty, tp, sl) {
   const dec = (Number(tp) < 1 || Number(sl) < 1) ? 4 : 2;
   const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
-    method: "POST", headers: H,
+    method: "POST",
+    headers: H,
     body: JSON.stringify({
-      symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day",
+      symbol: sym,
+      qty: String(qty),
+      side: "buy",
+      type: "market",
+      time_in_force: "day",
       order_class: "bracket",
       take_profit: { limit_price: Number(tp).toFixed(dec) },
       stop_loss:   { stop_price:  Number(sl).toFixed(dec) },
@@ -98,56 +176,47 @@ async function buyBracket(sym, qty, tp, sl) {
   return r.json();
 }
 
-async function stopSell(sym, qty, sl) {
+async function closePosition(sym) {
   try {
-    const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
-      method: "POST", headers: H,
-      body: JSON.stringify({ symbol: sym, qty: String(qty), side: "sell", type: "stop",
-        stop_price: Number(sl).toFixed(Number(sl) < 1 ? 4 : 2), time_in_force: "day" }),
-    });
-    return r.json();
-  } catch { return null; }
+    await fetch(`${ALPACA_BASE}/v2/positions/${sym}`, { method: "DELETE", headers: H });
+  } catch {}
 }
 
-async function ocoSell(sym, qty, tp, sl) {
-  const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
-    method: "POST", headers: H,
-    body: JSON.stringify({
-      symbol: sym, qty: String(qty), side: "sell", type: "limit", time_in_force: "day",
-      order_class: "oco",
-      take_profit: { limit_price: tp.toFixed(2) },
-      stop_loss:   { stop_price: sl.toFixed(2) },
-    }),
-  });
-  return r.json();
-}
+// ════════════════════════════════════════════════════════════════════════
+//  دوال Supabase
+// ════════════════════════════════════════════════════════════════════════
 
-async function placeExits(sym, qty, p) {
-  const raw = Number(p.t1) * STRATEGY.tp1FillNudge;
-  const t1px = +raw.toFixed(Number(p.t1) < 1 ? 4 : 2);
-  const resp = await ocoSell(sym, qty, t1px, Number(p.stop));
-  if (resp && (resp.code || resp.status === "rejected")) {
-    await stopSell(sym, qty, Number(p.stop));
-    return { ok: false, fallback: true };
+async function planList() {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/bot_positions?status=eq.active&select=*`, { headers: SB_H });
+    const d = await r.json();
+    return Array.isArray(d) ? d : [];
+  } catch {
+    return [];
   }
-  return { ok: true };
 }
 
-// ───────── Supabase ─────────
-async function planList() { try { const r = await fetch(`${SUPABASE_URL}/rest/v1/bot_positions?status=eq.active&select=*`, { headers: SB_H }); const d = await r.json(); return Array.isArray(d) ? d : []; } catch { return []; } }
 async function planSave(p) {
   p.updated_at = new Date().toISOString();
   await fetch(`${SUPABASE_URL}/rest/v1/bot_positions?on_conflict=symbol`, {
-    method: "POST", headers: { ...SB_H, Prefer: "resolution=merge-duplicates" }, body: JSON.stringify(p),
-  });
-}
-async function planClose(sym) {
-  await fetch(`${SUPABASE_URL}/rest/v1/bot_positions?symbol=eq.${sym}`, {
-    method: "PATCH", headers: SB_H, body: JSON.stringify({ status: "closed", updated_at: new Date().toISOString() }),
+    method: "POST",
+    headers: { ...SB_H, Prefer: "resolution=merge-duplicates" },
+    body: JSON.stringify(p),
   });
 }
 
-// ───────── حساب SMA ─────────
+async function planClose(sym) {
+  await fetch(`${SUPABASE_URL}/rest/v1/bot_positions?symbol=eq.${sym}`, {
+    method: "PATCH",
+    headers: SB_H,
+    body: JSON.stringify({ status: "closed", updated_at: new Date().toISOString() }),
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  دوال حسابية
+// ════════════════════════════════════════════════════════════════════════
+
 function calcSMA(prices, period) {
   if (!prices || prices.length < period) return null;
   const slice = prices.slice(-period);
@@ -173,7 +242,9 @@ async function fetchHourlyBars(symbol) {
     if (!res.ok) return null;
     const data = await res.json();
     return (data.results && data.results.length) ? data.results : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
@@ -187,128 +258,89 @@ function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
          rr >= minRR;
 }
 
+// ════════════════════════════════════════════════════════════════════════
+//  إدارة المراكز المفتوحة (مبسطة)
+// ════════════════════════════════════════════════════════════════════════
+
+async function manageOpenPositions() {
+  const results = [];
+  try {
+    const positions = await getAllPositions();
+    if (!Array.isArray(positions) || positions.length === 0) return results;
+
+    for (const pos of positions) {
+      const symbol = pos.symbol;
+      const currentPrice = parseFloat(pos.current_price);
+      const avgEntry = parseFloat(pos.avg_entry_price);
+      const pnlPct = ((currentPrice - avgEntry) / avgEntry) * 100;
+
+      // 🎯 هدف 0.7% → خروج فوري
+      if (pnlPct >= 0.7) {
+        await cancelAll(symbol);
+        await closePosition(symbol);
+        results.push({ symbol, action: "✅ هدف 0.7%", pnl: pnlPct.toFixed(2) + "%" });
+        continue;
+      }
+
+      // 🛑 وقف 0.5% → خروج فوري
+      if (pnlPct <= -0.5) {
+        await cancelAll(symbol);
+        await closePosition(symbol);
+        results.push({ symbol, action: "🛑 وقف 0.5%", pnl: pnlPct.toFixed(2) + "%" });
+        continue;
+      }
+    }
+  } catch (error) {
+    console.error("❌ خطأ في إدارة المراكز:", error);
+  }
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  MAIN HANDLER
+// ════════════════════════════════════════════════════════════════════════
+
 export default async function handler(req, res) {
   try {
     const log = { managed: [], entered: [], skipped: [], sniper: [] };
     const debug = { phase: "manage_only" };
-    const now = new Date();
-    const et  = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-    const mins = et.getHours() * 60 + et.getMinutes(), day = et.getDay();
-    const weekend = day === 0 || day === 6;
-    const canManage = !weekend && mins >= 575 && mins <= 958;
-    const canEnter  = !weekend && mins >= 590 && mins < 900;
 
-    if (!canManage)
-      return res.status(200).json({ success: true, message: "خارج ساعات الإدارة", ...log });
+    const now = new Date();
+    const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+    const mins = et.getHours() * 60 + et.getMinutes();
+    const day = et.getDay();
+    const weekend = day === 0 || day === 6;
+
+    // 9:30 ص - 4:00 م (بتوقيت نيويورك)
+    const canManage = !weekend && mins >= 570 && mins <= 960;
+    const canEnter = !weekend && mins >= 585 && mins < 945;
+
+    if (!canManage) {
+      return res.status(200).json({
+        success: true,
+        message: "خارج ساعات الإدارة",
+        time_et: `${et.getHours()}:${String(et.getMinutes()).padStart(2, "0")}`,
+      });
+    }
 
     // ═══ المرحلة 1: إدارة المراكز المفتوحة ═══
-    if (STRATEGY.engine === "smart") {
-      const plans = await planList();
-      for (const p of plans) {
-        const sym = p.symbol;
-        const held = await getPositionQty(sym);
-        const live = await getLatestPrice(sym);
-
-        if (held === 0) {
-          await cancelAll(sym);
-          await planClose(sym);
-          log.managed.push({ symbol: sym, action: "أُغلق المركز" });
-          continue;
-        }
-
-        if (p.add_enabled && !p.added && !p.tp1_done && live &&
-            live <= Number(p.add_level) && live > Number(p.stop) && p.add_qty > 0) {
-          const acct = await getAccount();
-          if (parseFloat(acct.cash || 0) >= p.add_qty * live) {
-            await buyMarket(sym, p.add_qty);
-            const newTotal = held + p.add_qty;
-            p.avg_entry = (Number(p.avg_entry) * held + live * p.add_qty) / newTotal;
-            p.total_qty = newTotal; p.added = true;
-            await cancelAll(sym);
-            await placeExits(sym, newTotal, p);
-            await planSave(p);
-            log.managed.push({ symbol: sym, action: "إضافة متدرّجة", addQty: p.add_qty, newAvg: +Number(p.avg_entry).toFixed(2) });
-            continue;
-          }
-        }
-
-        if (STRATEGY.tieredExit && !p.tp1_done && live && Number(p.t1) > 0 &&
-            live >= Number(p.t1) * STRATEGY.tp1FillNudge && held >= 2) {
-          const sellFrac = Number(p.t1_sell_frac) || STRATEGY.scalpT1Sell;
-          const sellQty = Math.max(1, Math.floor(held * sellFrac));
-          const keepQty = held - sellQty;
-          await cancelAll(sym);
-          const sellResp = await fetch(`${ALPACA_BASE}/v2/orders`, {
-            method: "POST", headers: H,
-            body: JSON.stringify({ symbol: sym, qty: String(sellQty), side: "sell", type: "market", time_in_force: "day" }),
-          }).then(r => r.json()).catch(() => null);
-          p.tp1_done = true;
-          p.stop = +Number(p.avg_entry).toFixed(Number(p.avg_entry) < 1 ? 4 : 2);
-          if (keepQty >= 1) {
-            const t3px = +(Number(p.t3) || live * 1.5).toFixed(Number(live) < 1 ? 4 : 2);
-            let ok = await ocoSell(sym, keepQty, t3px, p.stop);
-            if (!ok || ok.code) { await stopSell(sym, keepQty, p.stop); }
-          }
-          await planSave(p);
-          log.managed.push({ symbol: sym, action: `جني ${Math.round(sellFrac*100)}% عند T1 + الباقي بوقف تعادل`, sold: sellQty, kept: keepQty, type: p.stock_type });
-          continue;
-        }
-
-        const tp1q = Math.floor(Number(p.total_qty) * STRATEGY.tp1Fraction);
-        const remain = Number(p.total_qty) - tp1q;
-        if (!p.tp1_done && held <= remain && held < Number(p.total_qty) && live && live > Number(p.avg_entry)) {
-          p.tp1_done = true; p.be_moved = STRATEGY.breakevenAfterTp1;
-          await cancelAll(sym);
-          await placeExits(sym, held, p);
-          await planSave(p);
-          log.managed.push({ symbol: sym, action: "جني T1 + وقف تعادل", remaining: held, stop: STRATEGY.breakevenAfterTp1 ? +Number(p.avg_entry).toFixed(2) : Number(p.stop) });
-          continue;
-        }
-
-        if (STRATEGY.trailEnabled && live && Number(p.avg_entry) > 0) {
-          const gain = (live - Number(p.avg_entry)) / Number(p.avg_entry);
-          let newLock = null;
-          for (const tier of STRATEGY.trailTiers) {
-            if (gain >= tier.gain) newLock = tier.lock;
-          }
-          if (newLock != null) {
-            const newStop = +(Number(p.avg_entry) * (1 + newLock)).toFixed(Number(p.avg_entry) < 1 ? 4 : 2);
-            const curStop = Number(p.stop) || 0;
-            if (newStop > curStop && newStop < live) {
-              await cancelAll(sym);
-              const t3px = +(Number(p.t3) || live * 1.5).toFixed(Number(live) < 1 ? 4 : 2);
-              let ok = await ocoSell(sym, held, t3px, newStop);
-              if (!ok || ok.code) { await stopSell(sym, held, newStop); }
-              p.stop = newStop; p.trail_lock = newLock;
-              await planSave(p);
-              log.managed.push({ symbol: sym, action: "🔼 رفع الوقف (trailing)", gainPct: +(gain*100).toFixed(1), newStop, protects: `+${(newLock*100).toFixed(0)}%` });
-              continue;
-            }
-          }
-        }
-
-        const oo = await getOpenOrders(sym);
-        if (oo.length === 0) {
-          await placeExits(sym, held, p);
-          log.managed.push({ symbol: sym, action: "إصلاح أوامر الحماية", held });
-          continue;
-        }
-        log.managed.push({ symbol: sym, action: "تتبّع", held, live });
-      }
-    }
+    log.managed = await manageOpenPositions();
 
     // ═══ المرحلة 2: دخول صفقات جديدة ═══
     if (canEnter) {
-      const todayET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }))
-        .toISOString().split("T")[0];
+      const todayET = new Date().toISOString().split("T")[0];
       let candidates = [];
+
       try {
-        const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&order=score.desc&limit=100`, { headers: SB_H });
+        const sr = await fetch(
+          `${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&order=score.desc&limit=100`,
+          { headers: SB_H }
+        );
         if (sr.ok) {
           const rows = await sr.json();
           candidates = (Array.isArray(rows) ? rows : []).map(r => ({ ...r, price: r.entry_price }));
         }
-      } catch { /* تجاهل */ }
+      } catch {}
 
       const filtered = candidates.filter(s => {
         if (s.score < STRATEGY.minScore) return false;
@@ -325,8 +357,8 @@ export default async function handler(req, res) {
 
       const validEntry = x => x.structure && (x.structure.flag || "").indexOf("صحيح") >= 0;
       filtered.sort((a, b) => {
-        if (!!b.is_target   !== !!a.is_target)   return b.is_target   ? 1 : -1;
-        if (validEntry(b)   !== validEntry(a))   return validEntry(b) ? 1 : -1;
+        if (!!b.is_target !== !!a.is_target) return b.is_target ? 1 : -1;
+        if (validEntry(b) !== validEntry(a)) return validEntry(b) ? 1 : -1;
         if (!!b.early_watch !== !!a.early_watch) return b.early_watch ? 1 : -1;
         return (b.score || 0) - (a.score || 0);
       });
@@ -343,12 +375,16 @@ export default async function handler(req, res) {
       for (const s of filtered) {
         if (openCount >= STRATEGY.maxTrades) break;
         if (openSymbols.has(s.symbol)) continue;
+
         const st = s.structure;
         const live = await getLatestPrice(s.symbol);
         const px = live || s.price;
-        if (!px) { log.skipped.push({ symbol: s.symbol, reason: "لا يوجد سعر" }); continue; }
+        if (!px) {
+          log.skipped.push({ symbol: s.symbol, reason: "لا يوجد سعر" });
+          continue;
+        }
 
-        // 🆕 كشف زخم الصياد
+        // ─── كشف القناص ──────────────────────────────────
         let isSniper = false;
         let sniperStopPx = 0;
         let sniperT1 = 0;
@@ -363,7 +399,7 @@ export default async function handler(req, res) {
               const hourlyCloses = hourlyBars.map(b => b.c);
               freshCross = isFreshCross(hourlyCloses, 9, 21);
             }
-          } catch { /* تجاهل */ }
+          } catch {}
 
           const sniperConditions = {
             score: s.score >= STRATEGY.sniper.minScore,
@@ -374,9 +410,7 @@ export default async function handler(req, res) {
             cross: !STRATEGY.sniper.requireCross || freshCross,
           };
 
-          const allConditions = Object.values(sniperConditions).every(v => v === true);
-
-          if (allConditions) {
+          if (Object.values(sniperConditions).every(v => v === true)) {
             isSniper = true;
             sniperStopPx = px * (1 - STRATEGY.sniper.stopLoss);
             sniperT1 = px * (1 + STRATEGY.sniper.target1);
@@ -386,6 +420,7 @@ export default async function handler(req, res) {
           }
         }
 
+        // ─── حساب الأهداف ────────────────────────────────
         const radarPx = Number(s.price) || px;
         const driftPct = ((px - radarPx) / radarPx) * 100;
         if (driftPct > STRATEGY.maxDriftPct * 100) {
@@ -393,44 +428,50 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const support  = Number(st.support != null ? st.support : radarPx * 0.97);
-        const confirm  = Number(st.confirm != null ? st.confirm : radarPx);
-        const priceShift = px - radarPx;
-        let t1 = Number(s.target1 != null ? s.target1 : st.t1) + priceShift;
-        let t3 = Number(s.target3 != null ? s.target3 : st.t3) + priceShift;
-        let stopPx = support > 0 && support < px ? support * 0.995
-                   : Number(s.stop_loss != null ? s.stop_loss : st.stop);
+        const support = Number(st.support != null ? st.support : radarPx * 0.97);
+        const confirm = Number(st.confirm != null ? st.confirm : radarPx);
+
+        let t1, t3, stopPx;
 
         if (isSniper) {
-          if (sniperStopPx > stopPx) stopPx = sniperStopPx;
+          // 🎯 القناص: هدف 2%، وقف 1.5%
+          stopPx = sniperStopPx;
           t1 = sniperT1;
           t3 = sniperT2;
+        } else {
+          // 🎯 العادي: هدف 0.7%، وقف 0.5%
+          stopPx = px * (1 - STRATEGY.STOP_LOSS);
+          t1 = px * (1 + STRATEGY.TARGET_PROFIT);
+          t3 = px * (1 + STRATEGY.TARGET_PROFIT * 2);
         }
 
+        // ─── التأكد من صحة الوقف ────────────────────────
         if (stopPx > 0 && px <= stopPx) {
           log.skipped.push({ symbol: s.symbol, reason: `ضرب الوقف (${stopPx.toFixed(2)})` });
           continue;
         }
 
-        const capFloor = px * (1 - (isSniper ? STRATEGY.sniper.stopLoss : STRATEGY.maxLossPct));
-        if (stopPx < capFloor) stopPx = capFloor;
-
+        // ─── حساب RR ──────────────────────────────────────
         const rrLive = (px - stopPx) > 0 ? (t1 - px) / (px - stopPx) : 0;
         if (rrLive < STRATEGY.minRR) {
           log.skipped.push({ symbol: s.symbol, reason: `R:R ${rrLive.toFixed(1)}` });
           continue;
         }
 
+        // ─── التأكد من منطقة الدخول ──────────────────────
         const stLive = { ...st, support, confirm, t1, stop: stopPx, t3, rr: +rrLive.toFixed(2), entry: px };
-
         if (!suitableEntry(stLive, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
           log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول" });
           continue;
         }
 
         const riskPerShare = px - stopPx;
-        if (riskPerShare <= 0) { log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" }); continue; }
+        if (riskPerShare <= 0) {
+          log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" });
+          continue;
+        }
 
+        // ─── حساب حجم المركز ──────────────────────────────
         let qualityMult = 1.0;
         const sc = Number(s.score) || 60;
         if (sc >= 85) qualityMult = 1.6;
@@ -441,59 +482,81 @@ export default async function handler(req, res) {
         if (s.fresh_zone) qualityMult += 0.10;
         if (isSniper) qualityMult *= 1.1;
 
-        let fullValue = (balance * (isSniper ? sniperRisk : STRATEGY.riskPerTradePct)) * px / riskPerShare;
+        const tradeRiskPct = isSniper ? sniperRisk : STRATEGY.riskPerTradePct;
+        let fullValue = (balance * tradeRiskPct) * px / riskPerShare;
         fullValue = fullValue * qualityMult;
         const maxPosPct = isSniper ? STRATEGY.sniper.maxPosition : STRATEGY.maxPositionPct;
         fullValue = Math.min(fullValue, balance * maxPosPct);
-        if (fullValue < balance * STRATEGY.minPositionPct) { log.skipped.push({ symbol: s.symbol, reason: "تحت أرضية المركز" }); continue; }
-        if (deployed + fullValue > maxDeployed) { log.skipped.push({ symbol: s.symbol, reason: "بلغ سقف الانتشار" }); break; }
+
+        if (fullValue < balance * STRATEGY.minPositionPct) {
+          log.skipped.push({ symbol: s.symbol, reason: "تحت أرضية المركز" });
+          continue;
+        }
+        if (deployed + fullValue > maxDeployed) {
+          log.skipped.push({ symbol: s.symbol, reason: "بلغ سقف الانتشار" });
+          break;
+        }
 
         const fullQty = Math.floor(fullValue / px);
-        if (fullQty < 2) { log.skipped.push({ symbol: s.symbol, reason: "كمية صغيرة" }); continue; }
-        const initialQty = Math.max(1, Math.floor(fullQty * STRATEGY.initialFraction));
-        const addQty = fullQty - initialQty;
+        if (fullQty < 2) {
+          log.skipped.push({ symbol: s.symbol, reason: "كمية صغيرة" });
+          continue;
+        }
 
-        const brTp = isSniper
-          ? +(t3 || t1 * 1.05).toFixed(Number(t3) < 1 ? 4 : 2)
-          : STRATEGY.tieredExit
-          ? +(Number(t3) || Number(t1) * 1.2).toFixed(Number(t3) < 1 ? 4 : 2)
-          : +(Number(t1) * STRATEGY.tp1FillNudge).toFixed(Number(t1) < 1 ? 4 : 2);
-        const buy = await buyBracket(s.symbol, initialQty, brTp, stopPx);
+        const initialQty = Math.max(1, Math.floor(fullQty * STRATEGY.initialFraction));
+
+        // ─── تنفيذ الأمر ──────────────────────────────────
+        const buy = await buyBracket(s.symbol, initialQty, t1, stopPx);
         if (buy.status === "rejected" || buy.code) {
           log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت", err: buy.message || null });
           continue;
         }
 
+        // ─── حفظ الخطة ────────────────────────────────────
         const plan = {
-          symbol: s.symbol, status: "active",
-          initial_qty: initialQty, add_qty: addQty, added: false, add_enabled: STRATEGY.addEnabled && addQty > 0,
-          total_qty: initialQty, avg_entry: px, add_level: (support + px) / 2, stop: stopPx, t1: t1, t3: t3,
-          support: support, confirm: confirm, tp1_done: false, be_moved: false,
+          symbol: s.symbol,
+          status: "active",
+          initial_qty: initialQty,
+          add_qty: 0,
+          added: false,
+          add_enabled: false,
+          total_qty: initialQty,
+          avg_entry: px,
+          stop: stopPx,
+          t1: t1,
+          t3: t3,
+          support: support,
+          confirm: confirm,
+          tp1_done: false,
+          be_moved: false,
           stock_type: isSniper ? "صياد 🎯" : (s.type || "مضاربة"),
-          t1_sell_frac: isSniper ? 0.66 : (s.type === "استثمار" ? STRATEGY.investT1Sell : STRATEGY.scalpT1Sell),
+          t1_sell_frac: 1.0,
           is_sniper: isSniper,
         };
         await planSave(plan);
 
-        deployed += initialQty * px; openCount++; openSymbols.add(s.symbol);
+        deployed += initialQty * px;
+        openCount++;
+        openSymbols.add(s.symbol);
+
         log.entered.push({
           symbol: s.symbol,
           type: isSniper ? "SNIPER 🎯" : "REGULAR",
           px: +px.toFixed(2),
           initialQty,
-          reserveAdd: addQty,
           stop: +stopPx.toFixed(2),
           tp1: +t1.toFixed(2),
           rr: +((t1 - px) / (px - stopPx)).toFixed(2),
         });
       }
 
+      // ─── إحصائيات الرفض ──────────────────────────────
       const skipTally = {};
       for (const sk of log.skipped) skipTally[sk.reason] = (skipTally[sk.reason] || 0) + 1;
+
       debug.phase = "enter";
       debug.candidates = candidates.length;
       debug.after_filter = filtered.length;
-      debug.open_before = openSymbols.size - log.entered.length;
       debug.max_trades = STRATEGY.maxTrades;
       debug.entered = log.entered.length;
       debug.skipped = log.skipped.length;
@@ -503,12 +566,19 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json({
-      success: true, engine: STRATEGY.engine,
+      success: true,
+      engine: STRATEGY.engine,
       time_et: `${et.getHours()}:${String(et.getMinutes()).padStart(2, "0")}`,
       debug,
       ...log,
     });
+
   } catch (e) {
-    return res.status(200).json({ success: false, error: e.message });
+    console.error("❌ خطأ:", e);
+    return res.status(200).json({
+      success: false,
+      error: e.message,
+      stack: process.env.NODE_ENV === "development" ? e.stack : undefined,
+    });
   }
 }
