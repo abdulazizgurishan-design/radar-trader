@@ -360,7 +360,8 @@ export default async function handler(req, res) {
           const eqArr = (phd?.equity || []).filter(v => v > 0);
           if (eqArr.length > 1) {
             const wkPnl = (balance - eqArr[0]) / eqArr[0];
-            if (wkPnl <= -STRATEGY.weeklyLossHaltPct) entriesBlocked = `weekly_halt_${(wkPnl * 100).toFixed(1)}pct_مراجعة_يدوية`;
+            // ✅ تعطيل القاطع الأسبوعي بمتغير بيئة (DISABLE_WEEKLY_HALT=1)
+            if (process.env.DISABLE_WEEKLY_HALT !== "1" && wkPnl <= -STRATEGY.weeklyLossHaltPct) entriesBlocked = `weekly_halt_${(wkPnl * 100).toFixed(1)}pct_مراجعة_يدوية`;
           }
         } catch { /* فشل الجلب لا يعطّل التشغيل */ }
       }
