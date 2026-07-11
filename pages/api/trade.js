@@ -1,12 +1,27 @@
-// pages/api/trade.js — v10 (النسخة الذكية الكاملة)
+// pages/api/trade.js — v11 (شراء في منطقة الدخول + تأمين الربح)
 // ════════════════════════════════════════════════════════════════════════
-//  🚀 الإضافات الجديدة:
-//   ✅ تنبؤ الزخم (Momentum Predictor)
-//   ✅ كشف الانعكاس (Reversal Detection)
-//   ✅ الحجم الذكي (Smart Volume Analysis)
-//   ✅ الارتداد من الدعم (Support Bounce)
-//   ✅ التنبيه الذكي (Smart Alerts)
+//  🏗️ مبني على v10 — كل الدروع كما هي (Kill/يومي/أسبوعي/SPY-VWAP/براكِت ذري)
+//
+//  🔴 إصلاح قاتل: fetchAggs كانت غير معرّفة → مرحلة الدخول كانت تنهار بصمت
+//     (البوت كان يدير المفتوح فقط ولا يدخل صفقات). أُضيفت getMinuteBars من Alpaca.
+//
+//  🆕 v11 — التكامل مع scan v11:
+//   ✅ بوابة الدخول: 🟢 in_zone فقط (من structure.entry_state) — لا شراء ممتد/ملاحقة
+//   ✅ احترام تهدئة الرادار: structure.cooldown = true → تخطٍ
+//   ✅ هدف قريب لتأمين الربح: 50% من الكمية تُباع عند min(T1, سعر + 1×ATR)
+//   ✅ بعد تنفيذ الهدف القريب → نقل وقف الباقي للتعادل (صفقة مجانية)
+//   ✅ التنفيذ ببراكِتين ذريين (نصف بهدف قريب + نصف بهدف T1) — الحماية على Alpaca
+//
+//  🛡️ تصحيحات مخاطر (قرار CTO — قابلة للنقاش بالبيانات):
+//   ⛔ المارتينغيل مطفأ افتراضياً: مضاعفة الحجم بعد الخسارة تناقض riskPerTradePct
+//      وتكسّر القاطع اليومي. كذلك bot_state لا يُكتب فيه أصلاً (loss_streak فارغ دائماً).
+//   ⛔ مكافآت win_streak مطفأة لنفس السبب (bot_state غير مُغذّى).
+//   ✅ سقف صارم على أي مضاعف إجمالي: 0.85 – 1.6
+//   ✅ بوابة الارتداد من الدعم صارت ترجيحاً لا شرط قطع (كانت تمنع أغلب الدخولات)
+//   ✅ مهلة 10ث مصرّحة + حارس وقت داخلي لحلقة الدخول
 // ════════════════════════════════════════════════════════════════════════
+
+export const config = { maxDuration: 10 };
 
 const ALPACA_KEY    = process.env.ALPACA_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET;
@@ -21,10 +36,6 @@ const STRATEGY = {
   engine: "smart",
   addEnabled: false,
 
-  // 🎯 الأهداف والوقف
-  TARGET_PROFIT: 0.007,      // 0.7%
-  STOP_LOSS: 0.005,          // 0.5%
-
   // 🔍 الفلاتر الأساسية
   minScore: 60,
   minPrice: 3,
@@ -38,6 +49,20 @@ const STRATEGY = {
   entryBuffer: 1.02,
   minRoomPct: 0.01,
 
+  // 🆕 v11: بوابة حالة الدخول (من scan v11)
+  requireInZone: true,        // شراء في 🟢 فقط
+  respectRadarCooldown: true, // لا شراء لسهم ضرب وقفه مؤخراً
+
+  // 🆕 v11: تأمين الربح
+  nearTP: {
+    enabled: true,
+    sellFrac: 0.5,     // نصف الكمية عند الهدف القريب
+    atrMult: 1.0,      // الهدف القريب = سعر + 1×ATR
+    minPct: 0.008,     // أرضية 0.8% (لو ATR ضئيل)
+  },
+  breakevenAfterTp1: true,   // بعد الهدف القريب → وقف الباقي عند التعادل
+  breakevenNudge: 1.001,     // تعادل + هامش عمولة بسيط
+
   // 📊 إدارة المخاطر
   maxLossPct: 0.07,
   maxDriftPct: 0.05,
@@ -46,44 +71,27 @@ const STRATEGY = {
   minPositionPct: 0.03,
   maxDeployedPct: 0.70,
   maxTrades: 10,
+  maxTotalMult: 1.6,   // 🆕 سقف صارم لأي مضاعفات حجم مجتمعة
 
   // 🔄 الدخول/الخروج
   initialFraction: 0.70,
-  tp1Fraction: 1.0,
   tp1FillNudge: 0.998,
-  tieredExit: false,
-  trailEnabled: false,
 
-  // 🛡️ دروع الحماية
+  // 🛡️ دروع الحماية (كما هي — لا تُمس)
   dailyLossHaltPct: 0.02,
   weeklyLossHaltPct: 0.05,
   spyVwapFilter: true,
 
-  // 🆕 نظام التصعيد
-  martingale: {
-    enabled: true,
-    multiplier: 1.5,
-    maxStreak: 3,
-  },
-
-  // 🆕 نظام التبريد
-  cooldown: {
-    enabled: true,
-    lossStreak: 3,
-    duration: 30, // دقائق
-  },
-
-  // 🆕 نظام المكافآت
-  bonus: {
-    enabled: true,
-    winStreak5: 1.8,
-    winStreak3: 1.5,
-    winStreak1: 1.2,
-  },
+  // ⛔ مطفأة افتراضياً (انظر الترويسة) — التفعيل قرار واعٍ بعد بيانات paper
+  martingale: { enabled: false, multiplier: 1.5, maxStreak: 3 },
+  bonus: { enabled: false, winStreak5: 1.8, winStreak3: 1.5, winStreak1: 1.2 },
+  cooldown: { enabled: true, lossStreak: 3, duration: 30 },
 };
 
 const H    = { "APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET, "Content-Type": "application/json" };
 const SB_H = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" };
+
+const px2 = (v) => Number(v).toFixed(Number(v) < 1 ? 4 : 2);
 
 // ════════════════ دوال Alpaca ════════════════
 async function getAccount()        { const r = await fetch(`${ALPACA_BASE}/v2/account`, { headers: H }); return r.json(); }
@@ -106,12 +114,13 @@ async function getLatestPrices(symbols) {
   } catch { return {}; }
 }
 
-async function getQuote(sym) {
+// 🆕 v11: شموع الدقائق من Alpaca (كانت fetchAggs غير معرّفة — سبب انهيار الدخول)
+async function getMinuteBars(sym, limit = 30) {
   try {
-    const r = await fetch(`${ALPACA_DATA}/v2/stocks/${sym}/quotes/latest`, { headers: H });
+    const r = await fetch(`${ALPACA_DATA}/v2/stocks/${sym}/bars?timeframe=1Min&limit=${limit}`, { headers: H });
     if (!r.ok) return null;
     const d = await r.json();
-    return d?.quote ?? null;
+    return Array.isArray(d?.bars) && d.bars.length ? d.bars : null;
   } catch { return null; }
 }
 
@@ -121,14 +130,13 @@ async function cancelAll(sym)      { const oo = await getOpenOrders(sym); for (c
 async function buyMarket(sym, qty) { const r = await fetch(`${ALPACA_BASE}/v2/orders`, { method: "POST", headers: H, body: JSON.stringify({ symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day" }) }); return r.json(); }
 
 async function buyBracket(sym, qty, tp, sl) {
-  const dec = (Number(tp) < 1 || Number(sl) < 1) ? 4 : 2;
   const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
     method: "POST", headers: H,
     body: JSON.stringify({
       symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day",
       order_class: "bracket",
-      take_profit: { limit_price: Number(tp).toFixed(dec) },
-      stop_loss:   { stop_price:  Number(sl).toFixed(dec) },
+      take_profit: { limit_price: px2(tp) },
+      stop_loss:   { stop_price:  px2(sl) },
     }),
   });
   return r.json();
@@ -139,7 +147,7 @@ async function stopSell(sym, qty, sl) {
     const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
       method: "POST", headers: H,
       body: JSON.stringify({ symbol: sym, qty: String(qty), side: "sell", type: "stop",
-        stop_price: Number(sl).toFixed(Number(sl) < 1 ? 4 : 2), time_in_force: "day" }),
+        stop_price: px2(sl), time_in_force: "day" }),
     });
     return r.json();
   } catch { return null; }
@@ -151,8 +159,8 @@ async function ocoSell(sym, qty, tp, sl) {
     body: JSON.stringify({
       symbol: sym, qty: String(qty), side: "sell", type: "limit", time_in_force: "day",
       order_class: "oco",
-      take_profit: { limit_price: tp.toFixed(2) },
-      stop_loss:   { stop_price: sl.toFixed(2) },
+      take_profit: { limit_price: px2(tp) },   // 🆕 كان .toFixed(2) دائماً — يكسر أسهم تحت $1
+      stop_loss:   { stop_price: px2(sl) },
     }),
   });
   return r.json();
@@ -160,8 +168,7 @@ async function ocoSell(sym, qty, tp, sl) {
 
 async function placeExits(sym, qty, p) {
   const raw = Number(p.t1) * STRATEGY.tp1FillNudge;
-  const t1px = +raw.toFixed(Number(p.t1) < 1 ? 4 : 2);
-  const resp = await ocoSell(sym, qty, t1px, Number(p.stop));
+  const resp = await ocoSell(sym, qty, raw, Number(p.stop));
   if (resp && (resp.code || resp.status === "rejected")) {
     await stopSell(sym, qty, Number(p.stop));
     return { ok: false, fallback: true };
@@ -183,30 +190,12 @@ async function planClose(sym) {
   });
 }
 
-// ─── دوال Supabase الجديدة ──────────────────────────────────────────
 async function getBotState(sym) {
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/bot_state?symbol=eq.${sym}&select=*`, { headers: SB_H });
     const d = await r.json();
     return Array.isArray(d) && d.length ? d[0] : null;
   } catch { return null; }
-}
-
-async function updateBotState(sym, data) {
-  try {
-    const existing = await getBotState(sym);
-    if (existing) {
-      await fetch(`${SUPABASE_URL}/rest/v1/bot_state?symbol=eq.${sym}`, {
-        method: "PATCH", headers: SB_H,
-        body: JSON.stringify({ ...data, updated_at: new Date().toISOString() }),
-      });
-    } else {
-      await fetch(`${SUPABASE_URL}/rest/v1/bot_state`, {
-        method: "POST", headers: SB_H,
-        body: JSON.stringify({ symbol: sym, ...data }),
-      });
-    }
-  } catch {}
 }
 
 async function logTrade(trade) {
@@ -218,11 +207,9 @@ async function logTrade(trade) {
   } catch {}
 }
 
-// ════════════════ دوال التحليل الذكي ════════════════
-
-// 1️⃣ تنبؤ الزخم
+// ════════════════ دوال التحليل الذكي (كما هي) ════════════════
 function predictMomentum(bars) {
-  if (!bars || bars.length < 20) return { likelyUp: false, confidence: 0.5, label: "⚠️ بيانات غير كافية" };
+  if (!bars || bars.length < 20) return { likelyUp: true, confidence: 0.5, label: "⚠️ بيانات غير كافية" };
   const closes = bars.map(b => b.c);
   const volumes = bars.map(b => b.v);
   const last20 = closes.slice(-20);
@@ -245,7 +232,6 @@ function predictMomentum(bars) {
   return { likelyUp, confidence: Math.min(confidence, 1), label };
 }
 
-// 2️⃣ كشف الانعكاس
 function detectReversal(bars) {
   if (!bars || bars.length < 3) return { hasReversal: false, patterns: [], confidence: 0, signal: 'WAIT' };
   const last = bars.slice(-3);
@@ -269,7 +255,6 @@ function detectReversal(bars) {
   };
 }
 
-// 3️⃣ الحجم الذكي
 function analyzeVolume(volumes, prices) {
   if (!volumes || volumes.length < 20) return { ratio: 1, quality: '⚠️ بيانات غير كافية', flow: { positive: true }, warnings: [] };
   const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
@@ -287,7 +272,6 @@ function analyzeVolume(volumes, prices) {
   return { ratio, quality, flow: { positive: ratio > 1.2 }, warnings };
 }
 
-// 4️⃣ الارتداد من الدعم
 function detectSupportBounce(bars, price, support) {
   if (!bars || bars.length < 5 || !support) return { touchedSupport: false, bounced: false, volumeSupport: false, isBounce: false, confidence: 0 };
   const lastFew = bars.slice(-5);
@@ -306,7 +290,6 @@ function detectSupportBounce(bars, price, support) {
   };
 }
 
-// 5️⃣ التنبيه الذكي
 function generateAlerts(symbol, signal, price) {
   const alerts = [];
   if (signal.strength > 0.7) {
@@ -338,6 +321,7 @@ function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
 
 // ════════════════ MAIN HANDLER ════════════════
 export default async function handler(req, res) {
+  const T0 = Date.now();
   try {
     const log = { managed: [], entered: [], skipped: [] };
     const debug = { phase: "manage_only" };
@@ -364,6 +348,20 @@ export default async function handler(req, res) {
           await cancelAll(sym);
           await planClose(sym);
           log.managed.push({ symbol: sym, action: "أُغلق المركز" });
+          continue;
+        }
+
+        // 🆕 v11: تأمين الربح — الهدف القريب نُفّذ؟ → وقف الباقي للتعادل
+        if (STRATEGY.breakevenAfterTp1 && !p.be_done && p.runner_qty > 0 && held <= p.runner_qty) {
+          const be = Number(p.avg_entry) * STRATEGY.breakevenNudge;
+          await cancelAll(sym);
+          const resp = await ocoSell(sym, held, Number(p.t1), be);
+          if (resp && (resp.code || resp.status === "rejected")) {
+            await stopSell(sym, held, be);   // احتياط: وقف تعادل على الأقل
+          }
+          p.be_done = true; p.tp1_done = true; p.stop = be;
+          await planSave(p);
+          log.managed.push({ symbol: sym, action: "🔒 تأمين ربح — وقف الباقي للتعادل", be: +be.toFixed(2), remaining: held });
           continue;
         }
 
@@ -414,6 +412,8 @@ export default async function handler(req, res) {
         if (s.rvol != null && s.rvol < STRATEGY.minRvol) return false;
         if (s.vwap && s.price <= s.vwap) return false;
         if (!s.structure || s.structure.stop == null || s.structure.t1 == null) return false;
+        // 🆕 v11: احترام تهدئة الرادار (سهم ضرب وقفه مؤخراً)
+        if (STRATEGY.respectRadarCooldown && s.structure.cooldown) return false;
         return true;
       });
 
@@ -434,7 +434,7 @@ export default async function handler(req, res) {
       let deployed = positions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
       const maxDeployed = balance * STRATEGY.maxDeployedPct;
 
-      // ─── الدروع ──────────────────────────────────────────
+      // ─── الدروع (كما هي — لا تُمس) ────────────────────────
       let entriesBlocked = null;
 
       if (process.env.BOT_KILL === "1") entriesBlocked = "kill_switch";
@@ -473,6 +473,7 @@ export default async function handler(req, res) {
 
       for (const s of filtered) {
         if (entriesBlocked) break;
+        if (Date.now() - T0 > 8500) { debug.time_guard = true; break; }  // 🆕 حارس المهلة
         if (openCount >= STRATEGY.maxTrades) break;
         if (openSymbols.has(s.symbol)) continue;
 
@@ -504,22 +505,32 @@ export default async function handler(req, res) {
         const capFloor = px * (1 - STRATEGY.maxLossPct);
         if (stopPx < capFloor) stopPx = capFloor;
 
+        // 🆕 v11: بوابة 🟢 in_zone — قلب التكامل مع scan v11
+        if (STRATEGY.requireInZone) {
+          const eCode = st.entry_state && st.entry_state.code;
+          if (eCode) {
+            if (eCode !== "in_zone") {
+              log.skipped.push({ symbol: s.symbol, reason: `ليس بمنطقة الدخول (${eCode})` });
+              continue;
+            }
+          } else if (!suitableEntry(st, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
+            // إشارة قديمة بدون entry_state → الفحص الهيكلي القديم
+            log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول (فحص هيكلي)" });
+            continue;
+          }
+        }
+
         const rrLive = (px - stopPx) > 0 ? (t1 - px) / (px - stopPx) : 0;
         if (rrLive < STRATEGY.minRR) {
           log.skipped.push({ symbol: s.symbol, reason: `R:R ${rrLive.toFixed(1)}` });
           continue;
         }
 
-        const stLive = { ...st, support, confirm, t1, stop: stopPx, t3, rr: +rrLive.toFixed(2), entry: px };
-
-        // ─── 🆕 التحليل الذكي ────────────────────────────
-
-        // جلب الشموع للتحليل
-        const bars = await fetchAggs(s.symbol, 1, "minute", 1, 30);
+        // ─── التحليل الذكي (v11: انتقائي — يمنع فقط عند خطر واضح) ───
+        const bars = await getMinuteBars(s.symbol, 30);
         const closes = bars ? bars.map(b => b.c) : [];
         const volumes = bars ? bars.map(b => b.v) : [];
 
-        // 1️⃣ تنبؤ الزخم
         let momentum = { likelyUp: true, confidence: 0.5, label: "⚠️ غير معروف" };
         if (bars && bars.length >= 20) {
           momentum = predictMomentum(bars);
@@ -529,47 +540,24 @@ export default async function handler(req, res) {
           }
         }
 
-        // 2️⃣ كشف الانعكاس
+        // انعكاس هابط صريح فقط يمنع (شهاب) — الباقي ترجيح لا قطع
+        let bounceInfo = null;
         if (bars && bars.length >= 3) {
           const reversal = detectReversal(bars);
-          if (reversal.hasReversal && reversal.signal === 'WAIT') {
-            log.skipped.push({ symbol: s.symbol, reason: `انعكاس متوقع (${reversal.patterns.join(',')})` });
+          if (reversal.patterns.includes('shooting_star')) {
+            log.skipped.push({ symbol: s.symbol, reason: "انعكاس هابط (شهاب)" });
             continue;
           }
         }
-
-        // 3️⃣ الحجم الذكي
         if (volumes.length >= 20) {
           const volAnalysis = analyzeVolume(volumes, closes);
-          if (volAnalysis.ratio < 1.2) {
-            log.skipped.push({ symbol: s.symbol, reason: `حجم ضعيف (${volAnalysis.quality})` });
-            continue;
-          }
           if (volAnalysis.warnings.length > 0) {
             log.skipped.push({ symbol: s.symbol, reason: `تحذير حجم: ${volAnalysis.warnings.join(',')}` });
             continue;
           }
         }
-
-        // 4️⃣ الارتداد من الدعم
         if (bars && bars.length >= 5 && support > 0) {
-          const bounce = detectSupportBounce(bars, px, support);
-          if (!bounce.isBounce) {
-            log.skipped.push({ symbol: s.symbol, reason: `لم يرتد من الدعم (ثقة ${(bounce.confidence*100).toFixed(0)}%)` });
-            continue;
-          }
-        }
-
-        // 5️⃣ التنبيهات الذكية
-        const signalData = {
-          strength: s.score / 100,
-          stop: stopPx,
-          target: t1,
-          resistance: st.resistance || Infinity,
-        };
-        const alerts = generateAlerts(s.symbol, signalData, px);
-        if (alerts.some(a => a.priority === 'HIGH' && a.type === '📈 ENTRY')) {
-          debug.alerts = alerts.filter(a => a.priority === 'HIGH');
+          bounceInfo = detectSupportBounce(bars, px, support);  // ترجيح فقط — لا يمنع
         }
 
         // ─── حساب حجم المركز ──────────────────────────────
@@ -587,28 +575,29 @@ export default async function handler(req, res) {
         else qualityMult = 0.85;
         if (s.vcp) qualityMult += 0.15;
         if (s.fresh_zone) qualityMult += 0.10;
+        if (bounceInfo && bounceInfo.isBounce) qualityMult += 0.10;  // 🆕 الارتداد ترجيح
 
-        // 🆕 نظام التصعيد (Martingale)
-        let martingaleMult = 1.0;
+        // ⛔ مارتينغيل/مكافآت مطفأة افتراضياً — ولو فُعّلت: سقف صارم
+        let extraMult = 1.0;
         if (STRATEGY.martingale.enabled) {
           const state = await getBotState(s.symbol);
           if (state && state.loss_streak > 0) {
             const streak = Math.min(state.loss_streak, STRATEGY.martingale.maxStreak);
-            martingaleMult = 1 + (streak * 0.5); // ×1.5, ×2.0, ×2.5
+            extraMult *= 1 + (streak * 0.5);
           }
         }
-
-        // 🆕 نظام المكافآت (Bonus)
-        let bonusMult = 1.0;
         if (STRATEGY.bonus.enabled) {
           const state = await getBotState(s.symbol);
-          if (state && state.win_streak >= 5) bonusMult = STRATEGY.bonus.winStreak5;
-          else if (state && state.win_streak >= 3) bonusMult = STRATEGY.bonus.winStreak3;
-          else if (state && state.win_streak >= 1) bonusMult = STRATEGY.bonus.winStreak1;
+          if (state && state.win_streak >= 5) extraMult *= STRATEGY.bonus.winStreak5;
+          else if (state && state.win_streak >= 3) extraMult *= STRATEGY.bonus.winStreak3;
+          else if (state && state.win_streak >= 1) extraMult *= STRATEGY.bonus.winStreak1;
         }
 
+        // 🆕 السقف الصارم: لا مضاعف إجمالي فوق 1.6 مهما اجتمعت الأسباب
+        const totalMult = Math.min(Math.max(qualityMult * extraMult, 0.85), STRATEGY.maxTotalMult);
+
         let fullValue = (balance * STRATEGY.riskPerTradePct) * px / riskPerShare;
-        fullValue = fullValue * qualityMult * martingaleMult * bonusMult;
+        fullValue = fullValue * totalMult;
         fullValue = Math.min(fullValue, balance * STRATEGY.maxPositionPct);
 
         if (fullValue < balance * STRATEGY.minPositionPct) {
@@ -625,17 +614,37 @@ export default async function handler(req, res) {
           log.skipped.push({ symbol: s.symbol, reason: "كمية صغيرة" });
           continue;
         }
-        const initialQty = Math.max(1, Math.floor(fullQty * STRATEGY.initialFraction));
-        const addQty = fullQty - initialQty;
+        const initialQty = Math.max(2, Math.floor(fullQty * STRATEGY.initialFraction));
+        const addQty = Math.max(0, fullQty - initialQty);
 
-        // ─── تنفيذ الأمر ──────────────────────────────────
-        const brTp = STRATEGY.tieredExit
-          ? +(Number(t3) || Number(t1) * 1.2).toFixed(Number(t3) < 1 ? 4 : 2)
-          : +(Number(t1) * STRATEGY.tp1FillNudge).toFixed(Number(t1) < 1 ? 4 : 2);
-        const buy = await buyBracket(s.symbol, initialQty, brTp, stopPx);
+        // ─── 🆕 v11: الهدف القريب لتأمين الربح ─────────────
+        const atr = Number(s.atr14) || px * 0.02;
+        const nearDist = Math.max(atr * STRATEGY.nearTP.atrMult, px * STRATEGY.nearTP.minPct);
+        const nearTPpx = Math.min(t1, px + nearDist);   // لا يتجاوز T1 أبداً
+        const tp1Qty = STRATEGY.nearTP.enabled ? Math.max(1, Math.floor(initialQty * STRATEGY.nearTP.sellFrac)) : 0;
+        const runnerQty = initialQty - tp1Qty;
 
-        if (buy.status === "rejected" || buy.code) {
-          log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت", err: buy.message || null });
+        // ─── التنفيذ: براكِتان ذريان (الحماية تعيش على Alpaca) ──
+        let buyOk = false, buyErr = null;
+        if (STRATEGY.nearTP.enabled && tp1Qty >= 1 && runnerQty >= 1) {
+          const b1 = await buyBracket(s.symbol, tp1Qty, nearTPpx * STRATEGY.tp1FillNudge, stopPx);
+          if (b1.status === "rejected" || b1.code) { buyErr = b1.message || "رفض براكِت الهدف القريب"; }
+          else {
+            const b2 = await buyBracket(s.symbol, runnerQty, t1 * STRATEGY.tp1FillNudge, stopPx);
+            if (b2.status === "rejected" || b2.code) {
+              // النصف الأول دخل — النصف الثاني رُفض: نكمل بالنصف الأول فقط (محمي ببراكِته)
+              log.skipped.push({ symbol: s.symbol, reason: "براكِت الثاني رُفض — دخلنا بالنصف الأول فقط" });
+            }
+            buyOk = true;
+          }
+        } else {
+          const buy = await buyBracket(s.symbol, initialQty, t1 * STRATEGY.tp1FillNudge, stopPx);
+          if (buy.status === "rejected" || buy.code) buyErr = buy.message || null;
+          else buyOk = true;
+        }
+
+        if (!buyOk) {
+          log.skipped.push({ symbol: s.symbol, reason: "رُفض البراكِت", err: buyErr });
           continue;
         }
 
@@ -647,6 +656,8 @@ export default async function handler(req, res) {
           total_qty: initialQty, avg_entry: px,
           add_level: (support + px) / 2, stop: stopPx, t1: t1, t3: t3,
           support: support, confirm: confirm, tp1_done: false,
+          // 🆕 v11: حقول تأمين الربح
+          near_tp: +nearTPpx.toFixed(4), tp1_qty: tp1Qty, runner_qty: runnerQty, be_done: false,
           stock_type: s.type || "مضاربة",
           t1_sell_frac: (s.type === "استثمار") ? 0.33 : 0.50,
         };
@@ -660,11 +671,14 @@ export default async function handler(req, res) {
           symbol: s.symbol,
           px: +px.toFixed(2),
           initialQty,
+          nearTP: +nearTPpx.toFixed(2),
+          tp1Qty, runnerQty,
           reserveAdd: addQty,
           stop: +stopPx.toFixed(2),
           tp1: +t1.toFixed(2),
           rr: +((t1 - px) / (px - stopPx)).toFixed(2),
           momentum: momentum.label,
+          entry_state: (st.entry_state && st.entry_state.code) || "legacy",
         });
       }
 
@@ -683,11 +697,12 @@ export default async function handler(req, res) {
       success: true,
       engine: STRATEGY.engine,
       time_et: `${et.getHours()}:${String(et.getMinutes()).padStart(2, "0")}`,
+      elapsed_ms: Date.now() - T0,
       debug,
       ...log,
     });
 
   } catch (e) {
-    return res.status(200).json({ success: false, error: e.message });
+    return res.status(200).json({ success: false, error: e.message, elapsed_ms: Date.now() - T0 });
   }
 }
