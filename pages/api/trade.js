@@ -72,6 +72,7 @@ const STRATEGY = {
   maxDeployedPct: 0.70,
   maxTrades: 10,
   maxTotalMult: 1.6,   // 🆕 سقف صارم لأي مضاعفات حجم مجتمعة
+  goldenBoost: 0.15,   // 🥇 زيادة حجم للإشارات الذهبية (تحت السقف دائماً)
 
   // 🔄 الدخول/الخروج
   initialFraction: 0.70,
@@ -419,6 +420,8 @@ export default async function handler(req, res) {
 
       const validEntry = x => x.structure && (x.structure.flag || "").indexOf("صحيح") >= 0;
       filtered.sort((a, b) => {
+        const gA = !!(a.structure && a.structure.golden), gB = !!(b.structure && b.structure.golden);
+        if (gB !== gA) return gB ? 1 : -1;   // 🥇 الذهبي أولاً
         if (!!b.is_target !== !!a.is_target) return b.is_target ? 1 : -1;
         if (validEntry(b) !== validEntry(a)) return validEntry(b) ? 1 : -1;
         if (!!b.early_watch !== !!a.early_watch) return b.early_watch ? 1 : -1;
@@ -575,6 +578,7 @@ export default async function handler(req, res) {
         else qualityMult = 0.85;
         if (s.vcp) qualityMult += 0.15;
         if (s.fresh_zone) qualityMult += 0.10;
+        if (s.structure && s.structure.golden) qualityMult += STRATEGY.goldenBoost;  // 🥇 زخم ذهبي
         if (bounceInfo && bounceInfo.isBounce) qualityMult += 0.10;  // 🆕 الارتداد ترجيح
 
         // ⛔ مارتينغيل/مكافآت مطفأة افتراضياً — ولو فُعّلت: سقف صارم
