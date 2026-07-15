@@ -11,7 +11,7 @@
 //   ✅ عدد صفقات ديناميكي حسب تقلب السوق
 //   ✅ تسجيل شامل للتعلم الآلي
 //   ✅ minScore معدل إلى 60
-//   ✅ إصلاح مشكلة التاريخ (استخدام توقيت نيويورك)
+//   ✅ إصلاح مشكلة التاريخ (جلب الإشارات بدون فلتر تاريخ)
 // ════════════════════════════════════════════════════════════════════════
 
 export const config = { maxDuration: 20 };
@@ -988,13 +988,10 @@ export default async function handler(req, res) {
 
     // ═══ المرحلة 2: دخول صفقات جديدة ═══
     if (canEnter) {
-      // ✅ إصلاح مشكلة التاريخ: استخدام توقيت نيويورك
-      const ny = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-      const todayET = ny.toISOString().split("T")[0];
-      
+      // ✅ إصلاح مشكلة التاريخ: جلب الإشارات بدون فلتر تاريخ
       let candidates = [];
       try {
-        const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&order=score.desc&limit=200`, { headers: SB_H });
+        const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?select=*&order=score.desc&limit=200`, { headers: SB_H });
         if (sr.ok) {
           const rows = await sr.json();
           candidates = (Array.isArray(rows) ? rows : []).map(r => ({ ...r, price: r.entry_price }));
