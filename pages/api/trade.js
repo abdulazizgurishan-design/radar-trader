@@ -11,6 +11,7 @@
 //   ✅ عدد صفقات ديناميكي حسب تقلب السوق
 //   ✅ تسجيل شامل للتعلم الآلي
 //   ✅ minScore معدل إلى 60
+//   ✅ إصلاح مشكلة التاريخ (استخدام توقيت نيويورك)
 // ════════════════════════════════════════════════════════════════════════
 
 export const config = { maxDuration: 20 };
@@ -987,7 +988,10 @@ export default async function handler(req, res) {
 
     // ═══ المرحلة 2: دخول صفقات جديدة ═══
     if (canEnter) {
-      const todayET = new Date().toISOString().split("T")[0];
+      // ✅ إصلاح مشكلة التاريخ: استخدام توقيت نيويورك
+      const ny = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+      const todayET = ny.toISOString().split("T")[0];
+      
       let candidates = [];
       try {
         const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&order=score.desc&limit=200`, { headers: SB_H });
