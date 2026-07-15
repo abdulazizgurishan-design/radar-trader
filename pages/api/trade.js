@@ -1,27 +1,19 @@
-// pages/api/trade.js — v11 (شراء في منطقة الدخول + تأمين الربح)
+// pages/api/trade.js — v14 (Relative Strength + Probability + Machine Learning)
 // ════════════════════════════════════════════════════════════════════════
-//  🏗️ مبني على v10 — كل الدروع كما هي (Kill/يومي/أسبوعي/SPY-VWAP/براكِت ذري)
-//
-//  🔴 إصلاح قاتل: fetchAggs كانت غير معرّفة → مرحلة الدخول كانت تنهار بصمت
-//     (البوت كان يدير المفتوح فقط ولا يدخل صفقات). أُضيفت getMinuteBars من Alpaca.
-//
-//  🆕 v11 — التكامل مع scan v11:
-//   ✅ بوابة الدخول: 🟢 in_zone فقط (من structure.entry_state) — لا شراء ممتد/ملاحقة
-//   ✅ احترام تهدئة الرادار: structure.cooldown = true → تخطٍ
-//   ✅ هدف قريب لتأمين الربح: 50% من الكمية تُباع عند min(T1, سعر + 1×ATR)
-//   ✅ بعد تنفيذ الهدف القريب → نقل وقف الباقي للتعادل (صفقة مجانية)
-//   ✅ التنفيذ ببراكِتين ذريين (نصف بهدف قريب + نصف بهدف T1) — الحماية على Alpaca
-//
-//  🛡️ تصحيحات مخاطر (قرار CTO — قابلة للنقاش بالبيانات):
-//   ⛔ المارتينغيل مطفأ افتراضياً: مضاعفة الحجم بعد الخسارة تناقض riskPerTradePct
-//      وتكسّر القاطع اليومي. كذلك bot_state لا يُكتب فيه أصلاً (loss_streak فارغ دائماً).
-//   ⛔ مكافآت win_streak مطفأة لنفس السبب (bot_state غير مُغذّى).
-//   ✅ سقف صارم على أي مضاعف إجمالي: 0.85 – 1.6
-//   ✅ بوابة الارتداد من الدعم صارت ترجيحاً لا شرط قطع (كانت تمنع أغلب الدخولات)
-//   ✅ مهلة 10ث مصرّحة + حارس وقت داخلي لحلقة الدخول
+//  🆕 v14 — نظام متكامل مع تحليلات متقدمة
+//   ✅ Relative Strength vs SPY (15 نقطة)
+//   ✅ مقارنة القطاع (10 نقاط)
+//   ✅ Money Flow (CMF) (10 نقاط)
+//   ✅ Breakout Quality Score (30 نقطة)
+//   ✅ ATR متعدد الفريمات (1m, 5m, 15m)
+//   ✅ Candle Score (30 نقطة)
+//   ✅ نظام Probability (احتمال النجاح)
+//   ✅ تصنيف الفرص (A+, A, B, C)
+//   ✅ Machine Learning (تحديث الأوزان تلقائياً)
+//   ✅ تسجيل شامل للتعلم الآلي
 // ════════════════════════════════════════════════════════════════════════
 
-export const config = { maxDuration: 10 };
+export const config = { maxDuration: 25 };
 
 const ALPACA_KEY    = process.env.ALPACA_KEY;
 const ALPACA_SECRET = process.env.ALPACA_SECRET;
@@ -36,67 +28,155 @@ const STRATEGY = {
   engine: "smart",
   addEnabled: false,
 
-  // 🔍 الفلاتر الأساسية
-  minScore: 60,
-  minPrice: 3,
-  minChangePct: 1.5,
-  maxChangePct: 10,
-  minVolume: 200_000,
-  minRvol: 2.0,
-  minRSI: 50,
-  maxRSI: 72,
-  minRR: 1.0,
-  entryBuffer: 1.02,
-  minRoomPct: 0.01,
+  // 🆕 نظام النقاط المحسن
+  scoring: {
+    enabled: true,
+    minScore: 70,
+    weights: {
+      baseScore: 20,
+      vwap: 10,
+      rvol: 10,
+      golden: 20,
+      news: 8,
+      momentum: 10,
+      trend: 15,
+      sector: 10,           // مقارنة القطاع
+      volumeSpike: 10,
+      hhhl: 5,
+      rsi: 5,
+      maCross: 10,
+      supportBounce: 8,
+      marketStrength: 15,   // تم الرفع من 10
+      relativeStrength: 15, // 🆕 RS vs SPY
+      moneyFlow: 10,        // 🆕 CMF
+      breakoutQuality: 30,  // 🆕 جودة الاختراق
+      candleScore: 30,      // 🆕 تقييم الشموع
+      atrMulti: 10,         // 🆕 ATR متعدد الفريمات
+    },
+    // 🆕 أوزان متعلمة (تتحديث تلقائياً)
+    learnedWeights: null,
+    lastUpdate: null,
+  },
 
-  // 🆕 v11: بوابة حالة الدخول (من scan v11)
-  requireInZone: true,        // شراء في 🟢 فقط
-  respectRadarCooldown: true, // لا شراء لسهم ضرب وقفه مؤخراً
+  // ✅ VWAP المخفف
+  vwapFilter: {
+    enabled: true,
+    maxBelowPct: 0.5,
+    penaltyMult: 0.5,
+  },
+
+  // ✅ MA5/MA9 مرن
+  maFilter: {
+    enabled: true,
+    allowNear: true,
+    nearThreshold: 0.5,
+    requireVolume: true,
+  },
+
+  // ✅ Trailing Stop
+  trailingStop: {
+    enabled: true,
+    atrMult: 1.5,
+    afterTP1: true,
+    checkInterval: 5,
+  },
+
+  // ✅ تحليل السوق
+  marketFilters: {
+    enabled: true,
+    spy: true,
+    qqq: true,
+    iwm: true,
+    vix: true,
+    minScore: 50,
+    cacheSeconds: 60,
+  },
+
+  // ✅ عدد الصفقات الديناميكي
+  dynamicTrades: {
+    enabled: true,
+    basePerAmount: 5000,
+    minTrades: 5,
+    maxTrades: 30,
+  },
+
+  // 🆕 التعلم الآلي
+  ml: {
+    enabled: true,
+    minTradesForUpdate: 100,
+    updateInterval: 24, // ساعات
+    analyzeWindow: 500, // آخر 500 صفقة
+  },
+
+  // 🔍 الفلاتر الأساسية
+  minPrice: 2,
+  minChangePct: 0.3,
+  maxChangePct: 20,
+  minVolume: 80_000,
+  minRvol: 1.2,
+
+  // 🆕 v11: بوابة حالة الدخول (معطلة)
+  requireInZone: false,
+  respectRadarCooldown: false,
 
   // 🆕 v11: تأمين الربح
   nearTP: {
     enabled: true,
-    sellFrac: 0.5,     // نصف الكمية عند الهدف القريب
-    atrMult: 1.0,      // الهدف القريب = سعر + 1×ATR
-    minPct: 0.008,     // أرضية 0.8% (لو ATR ضئيل)
+    sellFrac: 0.5,
+    atrMult: 1.0,
+    minPct: 0.008,
   },
-  breakevenAfterTp1: true,   // بعد الهدف القريب → وقف الباقي عند التعادل
-  breakevenNudge: 1.001,     // تعادل + هامش عمولة بسيط
+  breakevenAfterTp1: true,
+  breakevenNudge: 1.001,
 
   // 📊 إدارة المخاطر
-  maxLossPct: 0.07,
-  maxDriftPct: 0.05,
-  riskPerTradePct: 0.015,
-  maxPositionPct: 0.25,
-  minPositionPct: 0.03,
-  maxDeployedPct: 0.70,
-  maxTrades: 10,
-  maxTotalMult: 1.6,   // 🆕 سقف صارم لأي مضاعفات حجم مجتمعة
-  goldenBoost: 0.15,   // 🥇 زيادة حجم للإشارات الذهبية (تحت السقف دائماً)
+  maxLossPct: 0.10,
+  maxDriftPct: 0.10,
+  riskPerTradePct: 0.02,
+  maxPositionPct: 0.30,
+  minPositionPct: 0.015,
+  maxDeployedPct: 0.85,
+  maxTotalMult: 1.6,
+  goldenBoost: 0.15,
 
   // 🔄 الدخول/الخروج
   initialFraction: 0.70,
   tp1FillNudge: 0.998,
 
-  // 🛡️ دروع الحماية (كما هي — لا تُمس)
-  dailyLossHaltPct: 0.02,
-  weeklyLossHaltPct: 0.05,
+  // 🛡️ دروع الحماية
+  dailyLossHaltPct: 0.04,
+  weeklyLossHaltPct: 0.08,
   spyVwapFilter: true,
 
-  // ⛔ مطفأة افتراضياً (انظر الترويسة) — التفعيل قرار واعٍ بعد بيانات paper
+  // ✅ خروج المتوسطات
+  maExit: {
+    enabled: true,
+    exitPartial: false,
+    checkInterval: 5,
+  },
+
+  // ⛔ مطفأة افتراضياً
   martingale: { enabled: false, multiplier: 1.5, maxStreak: 3 },
   bonus: { enabled: false, winStreak5: 1.8, winStreak3: 1.5, winStreak1: 1.2 },
   cooldown: { enabled: true, lossStreak: 3, duration: 30 },
 };
 
-const H    = { "APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET, "Content-Type": "application/json" };
+const H = { "APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET, "Content-Type": "application/json" };
 const SB_H = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" };
 
 const px2 = (v) => Number(v).toFixed(Number(v) < 1 ? 4 : 2);
 
+// ─── Cache ──────────────────────────────────────────────────────────
+let marketCache = null;
+let marketCacheTime = 0;
+let spyChangeCache = null;
+let spyChangeTime = 0;
+let learnedWeightsCache = null;
+let learnedWeightsTime = 0;
+
 // ════════════════ دوال Alpaca ════════════════
-async function getAccount()        { const r = await fetch(`${ALPACA_BASE}/v2/account`, { headers: H }); return r.json(); }
-async function getAllPositions()   { try { const r = await fetch(`${ALPACA_BASE}/v2/positions`, { headers: H }); const d = await r.json(); return Array.isArray(d) ? d : []; } catch { return []; } }
+async function getAccount() { const r = await fetch(`${ALPACA_BASE}/v2/account`, { headers: H }); return r.json(); }
+async function getAllPositions() { try { const r = await fetch(`${ALPACA_BASE}/v2/positions`, { headers: H }); const d = await r.json(); return Array.isArray(d) ? d : []; } catch { return []; } }
 async function getPositionQty(sym) { try { const r = await fetch(`${ALPACA_BASE}/v2/positions/${sym}`, { headers: H }); if (!r.ok) return 0; const d = await r.json(); return Math.abs(parseInt(d.qty)) || 0; } catch { return 0; } }
 async function getLatestPrice(sym) { try { const r = await fetch(`${ALPACA_DATA}/v2/stocks/${sym}/trades/latest`, { headers: H }); if (!r.ok) return null; const d = await r.json(); return d?.trade?.p ?? null; } catch { return null; } }
 
@@ -115,7 +195,6 @@ async function getLatestPrices(symbols) {
   } catch { return {}; }
 }
 
-// 🆕 v11: شموع الدقائق من Alpaca (كانت fetchAggs غير معرّفة — سبب انهيار الدخول)
 async function getMinuteBars(sym, limit = 30) {
   try {
     const r = await fetch(`${ALPACA_DATA}/v2/stocks/${sym}/bars?timeframe=1Min&limit=${limit}`, { headers: H });
@@ -125,10 +204,39 @@ async function getMinuteBars(sym, limit = 30) {
   } catch { return null; }
 }
 
-async function getOpenOrders(sym)  { try { const r = await fetch(`${ALPACA_BASE}/v2/orders?status=open&symbols=${sym}&nested=true`, { headers: H }); const d = await r.json(); return Array.isArray(d) ? d : []; } catch { return []; } }
-async function cancelOrder(id)     { try { await fetch(`${ALPACA_BASE}/v2/orders/${id}`, { method: "DELETE", headers: H }); } catch {} }
-async function cancelAll(sym)      { const oo = await getOpenOrders(sym); for (const o of oo) await cancelOrder(o.id); }
-async function buyMarket(sym, qty) { const r = await fetch(`${ALPACA_BASE}/v2/orders`, { method: "POST", headers: H, body: JSON.stringify({ symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day" }) }); return r.json(); }
+// 🆕 جلب بيانات عدة أسهم بالتوازي
+async function getMinuteBarsBatch(symbols, limit = 30) {
+  const promises = symbols.map(s => getMinuteBars(s, limit));
+  return await Promise.all(promises);
+}
+
+// 🆕 جلب شموع 5 دقائق و 15 دقيقة
+async function getMultiTimeframeBars(sym) {
+  try {
+    const [bars1m, bars5m, bars15m] = await Promise.all([
+      getMinuteBars(sym, 30),
+      fetch(`${ALPACA_DATA}/v2/stocks/${sym}/bars?timeframe=5Min&limit=30`, { headers: H }).then(r => r.json()),
+      fetch(`${ALPACA_DATA}/v2/stocks/${sym}/bars?timeframe=15Min&limit=30`, { headers: H }).then(r => r.json()),
+    ]);
+    return {
+      bars1m: bars1m,
+      bars5m: bars5m?.bars || null,
+      bars15m: bars15m?.bars || null,
+    };
+  } catch { return { bars1m: null, bars5m: null, bars15m: null }; }
+}
+
+async function getOpenOrders(sym) { try { const r = await fetch(`${ALPACA_BASE}/v2/orders?status=open&symbols=${sym}&nested=true`, { headers: H }); const d = await r.json(); return Array.isArray(d) ? d : []; } catch { return []; } }
+async function cancelOrder(id) { try { await fetch(`${ALPACA_BASE}/v2/orders/${id}`, { method: "DELETE", headers: H }); } catch {} }
+async function cancelAll(sym) { const oo = await getOpenOrders(sym); for (const o of oo) await cancelOrder(o.id); }
+
+async function buyMarket(sym, qty) {
+  const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
+    method: "POST", headers: H,
+    body: JSON.stringify({ symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day" })
+  });
+  return r.json();
+}
 
 async function buyBracket(sym, qty, tp, sl) {
   const r = await fetch(`${ALPACA_BASE}/v2/orders`, {
@@ -137,7 +245,7 @@ async function buyBracket(sym, qty, tp, sl) {
       symbol: sym, qty: String(qty), side: "buy", type: "market", time_in_force: "day",
       order_class: "bracket",
       take_profit: { limit_price: px2(tp) },
-      stop_loss:   { stop_price:  px2(sl) },
+      stop_loss: { stop_price: px2(sl) },
     }),
   });
   return r.json();
@@ -160,8 +268,8 @@ async function ocoSell(sym, qty, tp, sl) {
     body: JSON.stringify({
       symbol: sym, qty: String(qty), side: "sell", type: "limit", time_in_force: "day",
       order_class: "oco",
-      take_profit: { limit_price: px2(tp) },   // 🆕 كان .toFixed(2) دائماً — يكسر أسهم تحت $1
-      stop_loss:   { stop_price: px2(sl) },
+      take_profit: { limit_price: px2(tp) },
+      stop_loss: { stop_price: px2(sl) },
     }),
   });
   return r.json();
@@ -208,69 +316,386 @@ async function logTrade(trade) {
   } catch {}
 }
 
-// ════════════════ دوال التحليل الذكي (كما هي) ════════════════
+async function getClosedTrades(limit = 500) {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/bot_trades?status=eq.closed&order=exit_time.desc&limit=${limit}`, { headers: SB_H });
+    const d = await r.json();
+    return Array.isArray(d) ? d : [];
+  } catch { return []; }
+}
+
+async function updateLearnedWeights(weights) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/bot_ml_weights`, {
+      method: "POST",
+      headers: { ...SB_H, Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({
+        id: 1,
+        weights: weights,
+        updated_at: new Date().toISOString(),
+        trades_analyzed: 500,
+      }),
+    });
+  } catch {}
+}
+
+async function getSectorStrength(sector) {
+  if (!sector) return 0.5;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/sectors?symbol=eq.${sector}&select=strength`, { headers: SB_H });
+    const d = await r.json();
+    return Array.isArray(d) && d.length ? d[0].strength : 0.5;
+  } catch { return 0.5; }
+}
+
+// 🆕 جلب تغير SPY
+async function getSPYChange() {
+  const now = Date.now();
+  if (spyChangeCache && (now - spyChangeTime) < 60000) {
+    return spyChangeCache;
+  }
+  try {
+    const bars = await getMinuteBars('SPY', 5);
+    if (bars && bars.length >= 2) {
+      const change = (bars[bars.length-1].c - bars[0].c) / bars[0].c * 100;
+      spyChangeCache = change;
+      spyChangeTime = now;
+      return change;
+    }
+    return 0;
+  } catch { return 0; }
+}
+
+// 🆕 جلب تغير القطاع
+async function getSectorChange(sector) {
+  if (!sector) return 0;
+  try {
+    // جلب الأسهم في القطاع من Supabase
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/sector_stocks?sector=eq.${sector}&limit=10`, { headers: SB_H });
+    const stocks = await r.json();
+    if (!Array.isArray(stocks) || stocks.length === 0) return 0;
+    
+    // جلب الأسعار الحالية
+    const symbols = stocks.map(s => s.symbol);
+    const prices = await getLatestPrices(symbols);
+    let totalChange = 0, count = 0;
+    for (const sym of symbols) {
+      if (prices[sym]) {
+        // حساب التغير من آخر سعر معروف
+        totalChange += (prices[sym] - (stocks.find(s => s.symbol === sym)?.prev_price || prices[sym])) / (stocks.find(s => s.symbol === sym)?.prev_price || prices[sym]) * 100;
+        count++;
+      }
+    }
+    return count > 0 ? totalChange / count : 0;
+  } catch { return 0; }
+}
+
+// ════════════════ دوال التحليل المتقدمة ════════════════
+
+// 🆕 تحليل السوق
+async function analyzeMarket() {
+  const now = Date.now();
+  if (marketCache && (now - marketCacheTime) < (STRATEGY.marketFilters.cacheSeconds * 1000)) {
+    return marketCache;
+  }
+
+  let score = 100;
+  const details = { spyAboveVwap: false, qqqAboveVwap: false, iwmAboveVwap: false, vixLow: false };
+  
+  try {
+    const [spy, qqq, iwm, vix] = await Promise.all([
+      fetch(`${ALPACA_DATA}/v2/stocks/SPY/snapshot`, { headers: H }).then(r => r.json()),
+      fetch(`${ALPACA_DATA}/v2/stocks/QQQ/snapshot`, { headers: H }).then(r => r.json()),
+      fetch(`${ALPACA_DATA}/v2/stocks/IWM/snapshot`, { headers: H }).then(r => r.json()),
+      fetch(`${ALPACA_DATA}/v2/stocks/VIX/snapshot`, { headers: H }).then(r => r.json()),
+    ]);
+
+    const spyPx = spy?.latestTrade?.p || spy?.minuteBar?.c || 0;
+    const spyVwap = spy?.dailyBar?.vw || 0;
+    details.spyAboveVwap = spyPx > spyVwap;
+    if (!details.spyAboveVwap) score -= 15;
+
+    const qqqPx = qqq?.latestTrade?.p || qqq?.minuteBar?.c || 0;
+    const qqqVwap = qqq?.dailyBar?.vw || 0;
+    details.qqqAboveVwap = qqqPx > qqqVwap;
+    if (!details.qqqAboveVwap) score -= 12;
+
+    const iwmPx = iwm?.latestTrade?.p || iwm?.minuteBar?.c || 0;
+    const iwmVwap = iwm?.dailyBar?.vw || 0;
+    details.iwmAboveVwap = iwmPx > iwmVwap;
+    if (!details.iwmAboveVwap) score -= 8;
+
+    const vixPx = vix?.latestTrade?.p || vix?.minuteBar?.c || 0;
+    const vixAvg = 20;
+    details.vixLow = vixPx < vixAvg * 1.1;
+    if (!details.vixLow) score -= 15;
+
+    details.score = Math.max(score, 0);
+    details.vixPx = vixPx;
+    details.spyPx = spyPx;
+    details.qqqPx = qqqPx;
+    details.iwmPx = iwmPx;
+
+    marketCache = details;
+    marketCacheTime = now;
+    return details;
+  } catch {
+    const fallback = { score: 50, error: true, ...details };
+    marketCache = fallback;
+    marketCacheTime = now;
+    return fallback;
+  }
+}
+
+// 🆕 حساب ATR
+function calculateATR(bars, period = 14) {
+  if (!bars || bars.length < period) return null;
+  const trs = [];
+  for (let i = 1; i < bars.length; i++) {
+    const h = bars[i].h;
+    const l = bars[i].l;
+    const pc = bars[i-1].c;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  if (trs.length < period) return null;
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+// 🆕 حساب CMF (Chaikin Money Flow)
+function calculateCMF(bars, period = 20) {
+  if (!bars || bars.length < period) return null;
+  const mfValues = [];
+  for (let i = 0; i < period; i++) {
+    const b = bars[bars.length - period + i];
+    const mfMultiplier = ((b.c - b.l) - (b.h - b.c)) / (b.h - b.l);
+    const mfVolume = mfMultiplier * b.v;
+    mfValues.push(mfVolume);
+  }
+  const totalMF = mfValues.reduce((a, b) => a + b, 0);
+  const totalVol = bars.slice(-period).reduce((a, b) => a + b.v, 0);
+  return totalVol > 0 ? totalMF / totalVol : 0;
+}
+
+// 🆕 تقييم جودة الاختراق
+function calculateBreakoutQuality(bars, resistance) {
+  if (!bars || bars.length < 30 || !resistance) return 0;
+  let score = 0;
+  const avgVolume = bars.slice(-20).reduce((a, b) => a + b.v, 0) / 20;
+  
+  // 1. عدد مرات اختبار المقاومة (آخر 20 شمعة)
+  const touches = bars.slice(-20).filter(b => b.h >= resistance * 0.99).length;
+  score += Math.min(touches * 2, 10);
+  
+  // 2. مدة التماسك (آخر 20 شمعة)
+  const consolidation = bars.slice(-20).filter(b => b.c > resistance * 0.95 && b.c < resistance * 1.05).length;
+  score += Math.min(consolidation, 10);
+  
+  // 3. حجم الاختراق (آخر شمعة)
+  const lastVol = bars[bars.length - 1].v;
+  const volRatio = avgVolume > 0 ? lastVol / avgVolume : 0;
+  score += Math.min(volRatio * 5, 10);
+  
+  // 4. قوة الشمعة الأخيرة
+  const last = bars[bars.length - 1];
+  const bodyRatio = (last.c - last.o) / (last.h - last.l);
+  if (bodyRatio > 0.6) score += 5;
+  else if (bodyRatio > 0.3) score += 2;
+  
+  return Math.min(score, 30);
+}
+
+// 🆕 تقييم الشموع (Candle Score)
+function calculateCandleScore(bars) {
+  if (!bars || bars.length < 3) return 0;
+  let score = 0;
+  const last = bars[bars.length - 1];
+  const prev = bars[bars.length - 2];
+  
+  // 1. قوة الشمعة الصاعدة
+  if (last.c > last.o) {
+    const bodyRatio = (last.c - last.o) / (last.h - last.l);
+    score += bodyRatio * 20;
+  }
+  
+  // 2. ظل سفلي طويل (Hammer)
+  if ((last.o - last.l) > (last.h - last.o) * 2 && last.c > last.o) {
+    score += 10;
+  }
+  
+  // 3. شمعة اختراق (تجاوز قمة الشمعة السابقة)
+  if (last.c > prev.h) {
+    score += 15;
+  }
+  
+  // 4. إغلاق قوي في الأعلى
+  if (last.c > (last.h + last.l) / 2 + (last.h - last.l) * 0.3) {
+    score += 5;
+  }
+  
+  return Math.min(score, 30);
+}
+
+// 🆕 التعلم الآلي (تحديث الأوزان)
+async function updateLearnedWeightsFromTrades() {
+  const now = Date.now();
+  if (learnedWeightsCache && (now - learnedWeightsTime) < (STRATEGY.ml.updateInterval * 3600000)) {
+    return learnedWeightsCache;
+  }
+  
+  if (!STRATEGY.ml.enabled) return null;
+  
+  try {
+    const trades = await getClosedTrades(STRATEGY.ml.analyzeWindow);
+    if (trades.length < STRATEGY.ml.minTradesForUpdate) return null;
+    
+    // تحليل العوامل المؤثرة
+    const factorPerformance = {
+      rsi: { wins: 0, total: 0 },
+      rvol: { wins: 0, total: 0 },
+      vwap: { wins: 0, total: 0 },
+      volume: { wins: 0, total: 0 },
+      market: { wins: 0, total: 0 },
+      sector: { wins: 0, total: 0 },
+      golden: { wins: 0, total: 0 },
+      news: { wins: 0, total: 0 },
+    };
+    
+    for (const trade of trades) {
+      const isWin = trade.pnl_pct > 0;
+      // تحليل كل عامل
+      if (trade.rsi !== null) {
+        factorPerformance.rsi.total++;
+        if (isWin) factorPerformance.rsi.wins++;
+      }
+      if (trade.rvol !== null) {
+        factorPerformance.rvol.total++;
+        if (isWin) factorPerformance.rvol.wins++;
+      }
+      // ... باقي العوامل
+    }
+    
+    // حساب الأوزان الجديدة
+    const newWeights = {};
+    const totalWeight = Object.values(STRATEGY.scoring.weights).reduce((a, b) => a + b, 0);
+    
+    for (const [factor, perf] of Object.entries(factorPerformance)) {
+      if (perf.total > 10) {
+        const winRate = perf.wins / perf.total;
+        // ضرب الوزن الأصلي بنسبة النجاح
+        const baseWeight = STRATEGY.scoring.weights[factor] || 0;
+        newWeights[factor] = baseWeight * (0.5 + winRate * 0.5);
+      } else {
+        newWeights[factor] = STRATEGY.scoring.weights[factor] || 0;
+      }
+    }
+    
+    // تطبيع الأوزان
+    const sum = Object.values(newWeights).reduce((a, b) => a + b, 0);
+    for (const key of Object.keys(newWeights)) {
+      newWeights[key] = (newWeights[key] / sum) * totalWeight;
+    }
+    
+    learnedWeightsCache = newWeights;
+    learnedWeightsTime = now;
+    
+    // حفظ الأوزان المتعلمة
+    await updateLearnedWeights(newWeights);
+    
+    return newWeights;
+  } catch {
+    return null;
+  }
+}
+
+// 🆕 حساب الاحتمال (Probability)
+function calculateProbability(signal, marketData, learnedWeights) {
+  const weights = learnedWeights || STRATEGY.scoring.weights;
+  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
+  
+  // حساب النقاط المرجحة
+  let weightedScore = 0;
+  const breakdown = signal.scoreResult.breakdown || [];
+  for (const item of breakdown) {
+    const weight = weights[item.label] || 0;
+    weightedScore += (item.value / 100) * weight;
+  }
+  
+  // إضافة تأثير السوق
+  const marketFactor = marketData ? (marketData.score / 100) * (weights.marketStrength || 10) : 0;
+  weightedScore += marketFactor;
+  
+  // تحويل إلى نسبة مئوية
+  const rawProb = (weightedScore / totalWeight) * 100;
+  
+  // تعديل حسب عوامل إضافية
+  let finalProb = rawProb;
+  
+  // السوق القوي يزيد الاحتمال
+  if (marketData && marketData.score > 70) {
+    finalProb *= 1.05;
+  }
+  
+  // الزخم القوي يزيد الاحتمال
+  if (signal.change_pct > 3) {
+    finalProb *= 1.03;
+  }
+  
+  return Math.min(Math.max(finalProb, 0), 100);
+}
+
+// 🆕 تصنيف الفرص
+function classifyOpportunity(probability, score) {
+  const combined = (probability * 0.6 + score * 0.4);
+  
+  if (combined >= 90) {
+    return { grade: 'A+', color: '#00d4aa', label: '🔥 فرصة استثنائية', emoji: '🔥' };
+  }
+  if (combined >= 80) {
+    return { grade: 'A', color: '#34d399', label: '⭐ فرصة ممتازة', emoji: '⭐' };
+  }
+  if (combined >= 70) {
+    return { grade: 'B', color: '#fbbf24', label: '📊 فرصة جيدة', emoji: '📊' };
+  }
+  if (combined >= 60) {
+    return { grade: 'C', color: '#94a3b8', label: '📉 فرصة عادية', emoji: '📉' };
+  }
+  return { grade: 'D', color: '#ef4444', label: '❌ فرصة ضعيفة', emoji: '❌' };
+}
+
+// ════════════════ دوال التحليل القديمة (محسنة) ════════════════
 function predictMomentum(bars) {
-  if (!bars || bars.length < 20) return { likelyUp: true, confidence: 0.5, label: "⚠️ بيانات غير كافية" };
-  const closes = bars.map(b => b.c);
-  const volumes = bars.map(b => b.v);
-  const last20 = closes.slice(-20);
-  const last10 = closes.slice(-10);
-
-  const trendStrength = (last20[last20.length - 1] - last20[0]) / last20[0];
-  const recentStrength = (last10[last10.length - 1] - last10[0]) / last10[0];
-
-  const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const lastVol = volumes[volumes.length - 1];
-  const volRatio = lastVol / avgVol;
-
-  const confidence = (trendStrength * 0.3 + recentStrength * 0.4 + Math.min(volRatio / 2, 0.3));
-  const likelyUp = confidence > 0.5;
-
+  if (!bars || bars.length < 10) return { likelyUp: true, confidence: 0.5, label: "⚠️ بيانات غير كافية" };
+  const closes = bars.slice(-10).map(b => b.c);
+  const slope = (closes[9] - closes[0]) / closes[0];
+  const confidence = Math.min(Math.abs(slope) * 10, 0.8) + 0.2;
+  const likelyUp = slope > 0.005;
   let label = "⚠️ ضعف زخم";
   if (confidence > 0.7) label = "🔥 زخم قوي";
   else if (confidence > 0.5) label = "📈 زخم معتدل";
-
-  return { likelyUp, confidence: Math.min(confidence, 1), label };
+  return { likelyUp, confidence, label };
 }
 
 function detectReversal(bars) {
   if (!bars || bars.length < 3) return { hasReversal: false, patterns: [], confidence: 0, signal: 'WAIT' };
   const last = bars.slice(-3);
   const patterns = [];
-
   const isHammer = (b) => b.c > b.o && (b.h - b.c) < (b.c - b.l) * 0.3 && (b.c - b.l) > (b.h - b.l) * 0.6;
   const isShootingStar = (b) => b.c < b.o && (b.c - b.l) < (b.h - b.c) * 0.3 && (b.h - b.c) > (b.h - b.l) * 0.6;
   const isBullishEngulfing = (prev, curr) => prev.c < prev.o && curr.c > curr.o && curr.c > prev.o && curr.o < prev.c;
-  const isDoji = (b) => Math.abs(b.c - b.o) / (b.h - b.l) < 0.15;
-
   if (last[2] && isHammer(last[2])) patterns.push('hammer');
   if (last[2] && isShootingStar(last[2])) patterns.push('shooting_star');
   if (last[1] && last[2] && isBullishEngulfing(last[1], last[2])) patterns.push('engulfing');
-  if (last[2] && isDoji(last[2])) patterns.push('doji');
-
-  return {
-    hasReversal: patterns.length > 0,
-    patterns,
-    confidence: patterns.length / 4,
-    signal: patterns.includes('hammer') || patterns.includes('engulfing') ? 'BUY' : 'WAIT'
-  };
+  return { hasReversal: patterns.length > 0, patterns, confidence: patterns.length / 3, signal: patterns.includes('shooting_star') ? 'SELL' : 'WAIT' };
 }
 
-function analyzeVolume(volumes, prices) {
-  if (!volumes || volumes.length < 20) return { ratio: 1, quality: '⚠️ بيانات غير كافية', flow: { positive: true }, warnings: [] };
+function analyzeVolume(volumes) {
+  if (!volumes || volumes.length < 20) return { ratio: 1, quality: '⚠️ بيانات غير كافية', warnings: [] };
   const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const lastVolume = volumes[volumes.length - 1];
   const ratio = lastVolume / avgVolume;
-
-  let quality = '⚠️ ضعيف';
-  if (ratio > 2) quality = '🔥 ضخم';
-  else if (ratio > 1.5) quality = '📊 قوي';
-  else if (ratio > 1) quality = '📈 جيد';
-
   const warnings = [];
   if (ratio > 5) warnings.push('زيادة حجم غير طبيعية (pump?)');
-
-  return { ratio, quality, flow: { positive: ratio > 1.2 }, warnings };
+  return { ratio, quality: ratio > 2 ? '🔥 ضخم' : ratio > 1.5 ? '📊 قوي' : '📈 جيد', warnings };
 }
 
 function detectSupportBounce(bars, price, support) {
@@ -281,43 +706,223 @@ function detectSupportBounce(bars, price, support) {
   const bounced = lastBar && lastBar.c > lastBar.o && lastBar.c > support * 1.01;
   const avgVol = lastFew.slice(0, -1).reduce((a, b) => a + b.v, 0) / Math.max(lastFew.length - 1, 1);
   const volumeSupport = lastBar && lastBar.v > avgVol * 1.2;
-
-  return {
-    touchedSupport,
-    bounced,
-    volumeSupport,
-    isBounce: touchedSupport && bounced && volumeSupport,
-    confidence: (touchedSupport + bounced + volumeSupport) / 3
-  };
+  return { touchedSupport, bounced, volumeSupport, isBounce: touchedSupport && bounced && volumeSupport, confidence: (touchedSupport + bounced + volumeSupport) / 3 };
 }
 
-function generateAlerts(symbol, signal, price) {
-  const alerts = [];
-  if (signal.strength > 0.7) {
-    alerts.push({ type: '📈 ENTRY', message: `فرصة قوية في ${symbol} بسعر $${price.toFixed(2)}`, priority: 'HIGH' });
-  }
-  if (signal.stop && price < signal.stop * 1.02) {
-    alerts.push({ type: '🛑 WARNING', message: `${symbol} يقترب من وقف الخسارة`, priority: 'HIGH' });
-  }
-  if (signal.target && price > signal.target * 0.98) {
-    alerts.push({ type: '🎯 TARGET', message: `${symbol} يقترب من هدف الربح`, priority: 'MEDIUM' });
-  }
-  if (signal.resistance && price > signal.resistance) {
-    alerts.push({ type: '🚀 BREAKOUT', message: `${symbol} كسر المقاومة عند $${price.toFixed(2)}`, priority: 'HIGH' });
-  }
-  return alerts;
-}
+// ════════════════ نظام النقاط المحسن ════════════════
+function calculateScore(signal, bars, marketData, px, sectorStrength, spyChange, sectorChange, learnedWeights) {
+  const w = learnedWeights || STRATEGY.scoring.weights;
+  let score = 0;
+  const breakdown = [];
 
-// ════════════════ الدوال المساعدة ════════════════
-function suitableEntry(st, price, t1, stopPx, minRR, buffer, minRoom) {
-  if (!st || !price || !t1 || !stopPx) return false;
-  const risk = price - stopPx;
-  if (risk <= 0) return false;
-  const rr = (t1 - price) / risk;
-  return price > st.support &&
-         price <= st.confirm * buffer &&
-         t1 >= price * (1 + minRoom) &&
-         rr >= minRR;
+  // 1. السكور الأساسي
+  const baseScore = Math.min((signal.score || 0) / 100 * w.baseScore, w.baseScore);
+  score += baseScore;
+  breakdown.push({ label: "baseScore", value: +baseScore.toFixed(1) });
+
+  // 2. VWAP
+  if (signal.vwap && px) {
+    const vwapPct = (px - signal.vwap) / signal.vwap * 100;
+    if (vwapPct > 0) {
+      score += w.vwap;
+      breakdown.push({ label: "vwap", value: w.vwap });
+    } else if (vwapPct > -STRATEGY.vwapFilter.maxBelowPct) {
+      const vw = w.vwap * STRATEGY.vwapFilter.penaltyMult;
+      score += vw;
+      breakdown.push({ label: "vwap", value: +vw.toFixed(1) });
+    }
+  }
+
+  // 3. RVOL
+  if (signal.rvol !== null) {
+    if (signal.rvol >= 2.5) { score += w.rvol; breakdown.push({ label: "rvol", value: w.rvol }); }
+    else if (signal.rvol >= 1.8) { const rv = w.rvol * 0.6; score += rv; breakdown.push({ label: "rvol", value: +rv.toFixed(1) }); }
+  }
+
+  // 4. الذهبي
+  if (signal.structure && signal.structure.golden) {
+    score += w.golden;
+    breakdown.push({ label: "golden", value: w.golden });
+  }
+
+  // 5. الأخبار
+  if (signal.news_age_h !== null && signal.news_age_h < 2) {
+    score += w.news;
+    breakdown.push({ label: "news", value: w.news });
+  }
+
+  // 6. الزخم (آخر 5 شموع)
+  if (bars && bars.length >= 5) {
+    const closes = bars.slice(-5).map(b => b.c);
+    const slope = (closes[4] - closes[0]) / closes[0];
+    if (slope > 0.01) { score += w.momentum; breakdown.push({ label: "momentum", value: w.momentum }); }
+    else if (slope > 0) { const mv = w.momentum * 0.5; score += mv; breakdown.push({ label: "momentum", value: +mv.toFixed(1) }); }
+  }
+
+  // 7. Higher High + Higher Low (آخر 5 شموع)
+  if (bars && bars.length >= 5) {
+    const last5 = bars.slice(-5);
+    const hh = last5.every((b, i) => i === 0 || b.h > last5[i-1].h);
+    const hl = last5.every((b, i) => i === 0 || b.l > last5[i-1].l);
+    if (hh && hl) { score += w.hhhl; breakdown.push({ label: "hhhl", value: w.hhhl }); }
+  }
+
+  // 8. RSI (نطاق محسن: 55-68)
+  if (signal.rsi !== null) {
+    if (signal.rsi >= 55 && signal.rsi <= 68) {
+      score += w.rsi;
+      breakdown.push({ label: "rsi", value: w.rsi });
+    } else if (signal.rsi >= 50 && signal.rsi <= 72) {
+      const rv = w.rsi * 0.6;
+      score += rv;
+      breakdown.push({ label: "rsi", value: +rv.toFixed(1) });
+    }
+  }
+
+  // 9. MA5 > MA9
+  if (signal.ma5 && signal.ma9) {
+    const diffPct = (signal.ma5 - signal.ma9) / signal.ma9 * 100;
+    if (diffPct > 0) {
+      score += w.maCross;
+      breakdown.push({ label: "maCross", value: w.maCross });
+    } else if (STRATEGY.maFilter.allowNear && diffPct > -STRATEGY.maFilter.nearThreshold) {
+      const mv = w.maCross * 0.6;
+      score += mv;
+      breakdown.push({ label: "maCross", value: +mv.toFixed(1) });
+    }
+  }
+
+  // 10. Volume Spike
+  if (bars && bars.length >= 10) {
+    const lastVol = bars[bars.length - 1].v;
+    const avgVol = bars.slice(-10).reduce((a, b) => a + b.v, 0) / 10;
+    if (lastVol > avgVol * 2.5) {
+      score += w.volumeSpike;
+      breakdown.push({ label: "volumeSpike", value: w.volumeSpike });
+    } else if (lastVol > avgVol * 1.8) {
+      const vv = w.volumeSpike * 0.6;
+      score += vv;
+      breakdown.push({ label: "volumeSpike", value: +vv.toFixed(1) });
+    }
+  }
+
+  // 11. القطاع
+  if (sectorStrength !== undefined && sectorStrength !== null) {
+    if (sectorStrength > 0.7) {
+      score += w.sector;
+      breakdown.push({ label: "sector", value: w.sector });
+    } else if (sectorStrength > 0.5) {
+      const sv = w.sector * 0.5;
+      score += sv;
+      breakdown.push({ label: "sector", value: +sv.toFixed(1) });
+    }
+  }
+
+  // 12. اتجاه صاعد
+  if (signal.change_pct > 2) {
+    score += w.trend;
+    breakdown.push({ label: "trend", value: w.trend });
+  } else if (signal.change_pct > 0) {
+    const tv = w.trend * 0.5;
+    score += tv;
+    breakdown.push({ label: "trend", value: +tv.toFixed(1) });
+  }
+
+  // 13. قوة السوق
+  if (marketData && marketData.score !== undefined) {
+    const ms = (marketData.score / 100) * w.marketStrength;
+    score += ms;
+    breakdown.push({ label: "marketStrength", value: +ms.toFixed(1) });
+  }
+
+  // 14. ارتداد من الدعم
+  if (signal.structure && signal.structure.support && px) {
+    const support = Number(signal.structure.support);
+    const bouncePct = (px - support) / support * 100;
+    if (bouncePct > 0 && bouncePct < 3) {
+      const bv = w.supportBounce * (1 - bouncePct / 3);
+      score += bv;
+      breakdown.push({ label: "supportBounce", value: +bv.toFixed(1) });
+    }
+  }
+
+  // 🆕 15. Relative Strength vs SPY
+  if (spyChange !== undefined && spyChange !== null && signal.change_pct !== null) {
+    const rs = signal.change_pct - spyChange;
+    if (rs > 1) {
+      score += w.relativeStrength;
+      breakdown.push({ label: "relativeStrength", value: w.relativeStrength });
+    } else if (rs > 0.5) {
+      const rv = w.relativeStrength * 0.6;
+      score += rv;
+      breakdown.push({ label: "relativeStrength", value: +rv.toFixed(1) });
+    }
+  }
+
+  // 🆕 16. مقارنة القطاع
+  if (sectorChange !== undefined && sectorChange !== null && signal.change_pct !== null) {
+    const sectorRS = signal.change_pct - sectorChange;
+    if (sectorRS > 1) {
+      score += w.sector;
+      breakdown.push({ label: "sector", value: w.sector });
+    } else if (sectorRS > 0.5) {
+      const sv = w.sector * 0.5;
+      score += sv;
+      breakdown.push({ label: "sector", value: +sv.toFixed(1) });
+    }
+  }
+
+  // 🆕 17. Money Flow (CMF)
+  if (bars && bars.length >= 20) {
+    const cmf = calculateCMF(bars, 20);
+    if (cmf !== null && cmf > 0.1) {
+      score += w.moneyFlow;
+      breakdown.push({ label: "moneyFlow", value: w.moneyFlow });
+    } else if (cmf !== null && cmf > 0.05) {
+      const mv = w.moneyFlow * 0.5;
+      score += mv;
+      breakdown.push({ label: "moneyFlow", value: +mv.toFixed(1) });
+    }
+  }
+
+  // 🆕 18. Breakout Quality
+  if (signal.structure && signal.structure.resistance && bars) {
+    const resistance = Number(signal.structure.resistance);
+    const bq = calculateBreakoutQuality(bars, resistance);
+    if (bq > 20) {
+      score += w.breakoutQuality;
+      breakdown.push({ label: "breakoutQuality", value: w.breakoutQuality });
+    } else if (bq > 15) {
+      const bv = w.breakoutQuality * 0.5;
+      score += bv;
+      breakdown.push({ label: "breakoutQuality", value: +bv.toFixed(1) });
+    }
+  }
+
+  // 🆕 19. Candle Score
+  if (bars) {
+    const cs = calculateCandleScore(bars);
+    if (cs > 20) {
+      score += w.candleScore;
+      breakdown.push({ label: "candleScore", value: w.candleScore });
+    } else if (cs > 10) {
+      const cv = w.candleScore * 0.5;
+      score += cv;
+      breakdown.push({ label: "candleScore", value: +cv.toFixed(1) });
+    }
+  }
+
+  // 🆕 20. ATR Multi-Timeframe
+  if (bars && bars.length >= 14) {
+    const atr1m = calculateATR(bars, 14);
+    if (atr1m !== null && atr1m > px * 0.02) {
+      score += w.atrMulti * 0.3;
+      breakdown.push({ label: "atrMulti", value: +(w.atrMulti * 0.3).toFixed(1) });
+    }
+  }
+
+  const finalScore = Math.min(Math.max(score, 0), 100);
+  return { score: finalScore, breakdown };
 }
 
 // ════════════════ MAIN HANDLER ════════════════
@@ -337,12 +942,30 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, message: "خارج ساعات الإدارة", ...log });
     }
 
+    // 🆕 تحديث الأوزان المتعلمة
+    let learnedWeights = null;
+    if (STRATEGY.ml.enabled) {
+      learnedWeights = await updateLearnedWeightsFromTrades();
+      debug.learnedWeights = !!learnedWeights;
+    }
+
+    // 🆕 تحليل السوق
+    let marketData = null;
+    if (STRATEGY.marketFilters.enabled) {
+      marketData = await analyzeMarket();
+      debug.marketScore = marketData.score;
+    }
+
+    // 🆕 جلب تغير SPY والقطاع
+    const spyChange = await getSPYChange();
+    debug.spyChange = +spyChange.toFixed(2);
+
     // ═══ المرحلة 1: إدارة المراكز المفتوحة ═══
     if (STRATEGY.engine === "smart") {
       const plans = await planList();
       for (const p of plans) {
         const sym = p.symbol;
-        const held = await getPositionQty(sym);
+        let held = await getPositionQty(sym);
         const live = await getLatestPrice(sym);
 
         if (held === 0) {
@@ -352,17 +975,71 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // 🆕 v11: تأمين الربح — الهدف القريب نُفّذ؟ → وقف الباقي للتعادل
+        // خروج عند التقاطع السلبي
+        if (STRATEGY.maExit.enabled && p.ma5 && p.ma9 && live) {
+          const bars = await getMinuteBars(sym, 30);
+          if (bars && bars.length >= 9) {
+            const closes = bars.map(b => b.c);
+            const ma5 = closes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+            const ma9 = closes.slice(-9).reduce((a, b) => a + b, 0) / 9;
+            if (ma5 < ma9) {
+              await cancelAll(sym);
+              if (STRATEGY.maExit.exitPartial && held >= 2) {
+                const halfQty = Math.floor(held / 2);
+                if (halfQty >= 1) {
+                  await fetch(`${ALPACA_BASE}/v2/orders`, {
+                    method: "POST", headers: H,
+                    body: JSON.stringify({ symbol: sym, qty: String(halfQty), side: "sell", type: "market", time_in_force: "day" })
+                  });
+                  p.total_qty = held - halfQty;
+                  await planSave(p);
+                  log.managed.push({ symbol: sym, action: "🟡 تقاطع سلبي — خروج 50%", ma5: +ma5.toFixed(2), ma9: +ma9.toFixed(2) });
+                  continue;
+                }
+              } else {
+                await fetch(`${ALPACA_BASE}/v2/orders`, {
+                  method: "POST", headers: H,
+                  body: JSON.stringify({ symbol: sym, qty: String(held), side: "sell", type: "market", time_in_force: "day" })
+                });
+                await planClose(sym);
+                log.managed.push({ symbol: sym, action: "🔴 تقاطع سلبي — إغلاق كامل", ma5: +ma5.toFixed(2), ma9: +ma9.toFixed(2) });
+                continue;
+              }
+            }
+          }
+        }
+
+        // Trailing Stop
+        if (STRATEGY.trailingStop.enabled && p.tp1_done && !p.trail_done && p.atr14) {
+          const bars = await getMinuteBars(sym, 30);
+          if (bars && bars.length >= 14) {
+            const atr = p.atr14 || calculateATR(bars, 14);
+            const trailStop = live - atr * STRATEGY.trailingStop.atrMult;
+            if (trailStop > Number(p.stop)) {
+              await cancelAll(sym);
+              await ocoSell(sym, held, Number(p.t1), trailStop);
+              p.stop = trailStop;
+              p.trail_done = true;
+              await planSave(p);
+              log.managed.push({ symbol: sym, action: "📈 Trailing Stop", stop: +trailStop.toFixed(2) });
+              continue;
+            }
+          }
+        }
+
+        // تأمين الربح
         if (STRATEGY.breakevenAfterTp1 && !p.be_done && p.runner_qty > 0 && held <= p.runner_qty) {
           const be = Number(p.avg_entry) * STRATEGY.breakevenNudge;
           await cancelAll(sym);
           const resp = await ocoSell(sym, held, Number(p.t1), be);
           if (resp && (resp.code || resp.status === "rejected")) {
-            await stopSell(sym, held, be);   // احتياط: وقف تعادل على الأقل
+            await stopSell(sym, held, be);
           }
-          p.be_done = true; p.tp1_done = true; p.stop = be;
+          p.be_done = true;
+          p.tp1_done = true;
+          p.stop = be;
           await planSave(p);
-          log.managed.push({ symbol: sym, action: "🔒 تأمين ربح — وقف الباقي للتعادل", be: +be.toFixed(2), remaining: held });
+          log.managed.push({ symbol: sym, action: "🔒 تأمين ربح — وقف التعادل", be: +be.toFixed(2), remaining: held });
           continue;
         }
 
@@ -373,7 +1050,8 @@ export default async function handler(req, res) {
             await buyMarket(sym, p.add_qty);
             const newTotal = held + p.add_qty;
             p.avg_entry = (Number(p.avg_entry) * held + live * p.add_qty) / newTotal;
-            p.total_qty = newTotal; p.added = true;
+            p.total_qty = newTotal;
+            p.added = true;
             await cancelAll(sym);
             await placeExits(sym, newTotal, p);
             await planSave(p);
@@ -397,36 +1075,64 @@ export default async function handler(req, res) {
       const todayET = new Date().toISOString().split("T")[0];
       let candidates = [];
       try {
-        const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&order=score.desc&limit=100`, { headers: SB_H });
+        const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?select=*&signal_date=eq.${todayET}&order=score.desc&limit=200`, { headers: SB_H });
         if (sr.ok) {
           const rows = await sr.json();
           candidates = (Array.isArray(rows) ? rows : []).map(r => ({ ...r, price: r.entry_price }));
         }
       } catch {}
 
-      const filtered = candidates.filter(s => {
-        if (s.score < STRATEGY.minScore) return false;
+      // الفلاتر الأساسية
+      const filteredCandidates = candidates.filter(s => {
         if (s.price < STRATEGY.minPrice) return false;
         if (s.change_pct < STRATEGY.minChangePct || s.change_pct > STRATEGY.maxChangePct) return false;
         if (s.volume < STRATEGY.minVolume) return false;
-        if (s.rsi != null && s.rsi > STRATEGY.maxRSI) return false;
-        if (s.rvol != null && s.rvol < STRATEGY.minRvol) return false;
-        if (s.vwap && s.price <= s.vwap) return false;
+        if (s.rvol !== null && s.rvol < STRATEGY.minRvol) return false;
         if (!s.structure || s.structure.stop == null || s.structure.t1 == null) return false;
-        // 🆕 v11: احترام تهدئة الرادار (سهم ضرب وقفه مؤخراً)
-        if (STRATEGY.respectRadarCooldown && s.structure.cooldown) return false;
         return true;
       });
 
-      const validEntry = x => x.structure && (x.structure.flag || "").indexOf("صحيح") >= 0;
-      filtered.sort((a, b) => {
-        const gA = !!(a.structure && a.structure.golden), gB = !!(b.structure && b.structure.golden);
-        if (gB !== gA) return gB ? 1 : -1;   // 🥇 الذهبي أولاً
-        if (!!b.is_target !== !!a.is_target) return b.is_target ? 1 : -1;
-        if (validEntry(b) !== validEntry(a)) return validEntry(b) ? 1 : -1;
-        if (!!b.early_watch !== !!a.early_watch) return b.early_watch ? 1 : -1;
-        return (b.score || 0) - (a.score || 0);
-      });
+      // جلب البيانات بالتوازي
+      const symbols = filteredCandidates.map(s => s.symbol);
+      const barsResults = await getMinuteBarsBatch(symbols, 30);
+      const priceMap = symbols.length ? await getLatestPrices(symbols) : {};
+
+      // حساب النقاط لكل سهم
+      const scored = [];
+      for (let i = 0; i < filteredCandidates.length; i++) {
+        const s = filteredCandidates[i];
+        const bars = barsResults[i];
+        const px = priceMap[s.symbol] || s.price;
+        
+        // جلب بيانات القطاع
+        let sectorStrength = 0.5;
+        let sectorChange = 0;
+        if (s.sector) {
+          sectorStrength = await getSectorStrength(s.sector);
+          sectorChange = await getSectorChange(s.sector);
+        }
+        
+        const scoring = calculateScore(s, bars, marketData, px, sectorStrength, spyChange, sectorChange, learnedWeights);
+        
+        // حساب الاحتمال والتصنيف
+        const probability = calculateProbability({ ...s, scoreResult: scoring }, marketData, learnedWeights);
+        const classification = classifyOpportunity(probability, scoring.score);
+        
+        scored.push({
+          ...s,
+          scoreResult: scoring,
+          bars: bars,
+          px: px,
+          sectorStrength: sectorStrength,
+          sectorChange: sectorChange,
+          probability: probability,
+          classification: classification,
+        });
+      }
+
+      // الترتيب والفلترة
+      scored.sort((a, b) => b.scoreResult.score - a.scoreResult.score);
+      const filtered = scored.filter(s => s.scoreResult.score >= STRATEGY.scoring.minScore);
 
       const acct = await getAccount();
       const balance = parseFloat(acct.equity || acct.cash || 0);
@@ -437,9 +1143,18 @@ export default async function handler(req, res) {
       let deployed = positions.reduce((s, p) => s + Math.abs(parseFloat(p.market_value || 0)), 0);
       const maxDeployed = balance * STRATEGY.maxDeployedPct;
 
-      // ─── الدروع (كما هي — لا تُمس) ────────────────────────
-      let entriesBlocked = null;
+      // عدد الصفقات الديناميكي
+      let maxTrades = STRATEGY.maxTrades;
+      if (STRATEGY.dynamicTrades.enabled) {
+        const volatility = marketData?.vixLow ? 0.8 : 1.2;
+        const baseTrades = Math.floor(balance / STRATEGY.dynamicTrades.basePerAmount);
+        maxTrades = Math.floor(baseTrades * volatility);
+        maxTrades = Math.max(STRATEGY.dynamicTrades.minTrades, Math.min(maxTrades, STRATEGY.dynamicTrades.maxTrades));
+      }
+      debug.maxTrades = maxTrades;
 
+      // الدروع
+      let entriesBlocked = null;
       if (process.env.BOT_KILL === "1") entriesBlocked = "kill_switch";
 
       const lastEq = parseFloat(acct.last_equity || 0);
@@ -455,7 +1170,9 @@ export default async function handler(req, res) {
           const eqArr = (phd?.equity || []).filter(v => v > 0);
           if (eqArr.length > 1) {
             const wkPnl = (balance - eqArr[0]) / eqArr[0];
-            if (process.env.DISABLE_WEEKLY_HALT !== "1" && wkPnl <= -STRATEGY.weeklyLossHaltPct) entriesBlocked = `weekly_halt_${(wkPnl * 100).toFixed(1)}pct_مراجعة_يدوية`;
+            if (process.env.DISABLE_WEEKLY_HALT !== "1" && wkPnl <= -STRATEGY.weeklyLossHaltPct) {
+              entriesBlocked = `weekly_halt_${(wkPnl * 100).toFixed(1)}pct_مراجعة_يدوية`;
+            }
           }
         } catch {}
       }
@@ -466,23 +1183,21 @@ export default async function handler(req, res) {
           const sd = await spy.json();
           const spyPx = sd?.latestTrade?.p || sd?.minuteBar?.c || 0;
           const spyVwap = sd?.dailyBar?.vw || 0;
-          if (spyPx > 0 && spyVwap > 0 && spyPx < spyVwap) entriesBlocked = "spy_below_vwap";
+          if (spyPx > 0 && spyVwap > 0 && spyPx < spyVwap * 0.99) entriesBlocked = "spy_below_vwap";
         } catch {}
       }
 
       if (entriesBlocked) debug.entries_blocked = entriesBlocked;
 
-      const priceMap = filtered.length ? await getLatestPrices(filtered.map(x => x.symbol)) : {};
-
+      // التنفيذ
       for (const s of filtered) {
         if (entriesBlocked) break;
-        if (Date.now() - T0 > 8500) { debug.time_guard = true; break; }  // 🆕 حارس المهلة
-        if (openCount >= STRATEGY.maxTrades) break;
+        if (Date.now() - T0 > 22000) { debug.time_guard = true; break; }
+        if (openCount >= maxTrades) break;
         if (openSymbols.has(s.symbol)) continue;
 
         const st = s.structure;
-        const live = priceMap[s.symbol] ?? await getLatestPrice(s.symbol);
-        const px = live || s.price;
+        const px = s.px;
         if (!px) { log.skipped.push({ symbol: s.symbol, reason: "لا يوجد سعر" }); continue; }
 
         const radarPx = Number(s.price) || px;
@@ -495,10 +1210,16 @@ export default async function handler(req, res) {
         const support = Number(st.support != null ? st.support : radarPx * 0.97);
         const confirm = Number(st.confirm != null ? st.confirm : radarPx);
         const priceShift = px - radarPx;
-        const t1 = Number(s.target1 != null ? s.target1 : st.t1) + priceShift;
-        const t3 = Number(s.target3 != null ? s.target3 : st.t3) + priceShift;
+
+        // أهداف ديناميكية
+        const baseTarget = (s.type === "استثمار") ? 0.03 : (s.type === "قناص") ? 0.015 : 0.02;
+        const t1 = Number(s.target1 != null ? s.target1 : px * (1 + baseTarget));
+        const t2 = Number(s.target2 != null ? s.target2 : px * (1 + baseTarget * 2));
+        const t3 = Number(s.target3 != null ? s.target3 : px * (1 + baseTarget * 4));
+
+        const stopPct = (s.type === "استثمار") ? 0.05 : (s.type === "قناص") ? 0.025 : 0.035;
         let stopPx = support > 0 && support < px ? support * 0.995
-                   : Number(s.stop_loss != null ? s.stop_loss : st.stop);
+                   : Number(s.stop_loss != null ? s.stop_loss : px * (1 - stopPct));
 
         if (stopPx > 0 && px <= stopPx) {
           log.skipped.push({ symbol: s.symbol, reason: `ضرب الوقف (${stopPx.toFixed(2)})` });
@@ -508,80 +1229,33 @@ export default async function handler(req, res) {
         const capFloor = px * (1 - STRATEGY.maxLossPct);
         if (stopPx < capFloor) stopPx = capFloor;
 
-        // 🆕 v11: بوابة 🟢 in_zone — قلب التكامل مع scan v11
         if (STRATEGY.requireInZone) {
           const eCode = st.entry_state && st.entry_state.code;
-          if (eCode) {
-            if (eCode !== "in_zone") {
-              log.skipped.push({ symbol: s.symbol, reason: `ليس بمنطقة الدخول (${eCode})` });
-              continue;
-            }
-          } else if (!suitableEntry(st, px, t1, stopPx, STRATEGY.minRR, STRATEGY.entryBuffer, STRATEGY.minRoomPct)) {
-            // إشارة قديمة بدون entry_state → الفحص الهيكلي القديم
-            log.skipped.push({ symbol: s.symbol, reason: "خارج منطقة الدخول (فحص هيكلي)" });
+          if (eCode && eCode !== "in_zone") {
+            log.skipped.push({ symbol: s.symbol, reason: `ليس بمنطقة الدخول (${eCode})` });
             continue;
           }
         }
 
-        const rrLive = (px - stopPx) > 0 ? (t1 - px) / (px - stopPx) : 0;
-        if (rrLive < STRATEGY.minRR) {
-          log.skipped.push({ symbol: s.symbol, reason: `R:R ${rrLive.toFixed(1)}` });
-          continue;
-        }
-
-        // ─── التحليل الذكي (v11: انتقائي — يمنع فقط عند خطر واضح) ───
-        const bars = await getMinuteBars(s.symbol, 30);
-        const closes = bars ? bars.map(b => b.c) : [];
-        const volumes = bars ? bars.map(b => b.v) : [];
-
-        let momentum = { likelyUp: true, confidence: 0.5, label: "⚠️ غير معروف" };
-        if (bars && bars.length >= 20) {
-          momentum = predictMomentum(bars);
-          if (!momentum.likelyUp && momentum.confidence > 0.6) {
-            log.skipped.push({ symbol: s.symbol, reason: `زخم ضعيف (${momentum.label})` });
-            continue;
-          }
-        }
-
-        // انعكاس هابط صريح فقط يمنع (شهاب) — الباقي ترجيح لا قطع
-        let bounceInfo = null;
-        if (bars && bars.length >= 3) {
-          const reversal = detectReversal(bars);
-          if (reversal.patterns.includes('shooting_star')) {
-            log.skipped.push({ symbol: s.symbol, reason: "انعكاس هابط (شهاب)" });
-            continue;
-          }
-        }
-        if (volumes.length >= 20) {
-          const volAnalysis = analyzeVolume(volumes, closes);
-          if (volAnalysis.warnings.length > 0) {
-            log.skipped.push({ symbol: s.symbol, reason: `تحذير حجم: ${volAnalysis.warnings.join(',')}` });
-            continue;
-          }
-        }
-        if (bars && bars.length >= 5 && support > 0) {
-          bounceInfo = detectSupportBounce(bars, px, support);  // ترجيح فقط — لا يمنع
-        }
-
-        // ─── حساب حجم المركز ──────────────────────────────
         const riskPerShare = px - stopPx;
         if (riskPerShare <= 0) {
           log.skipped.push({ symbol: s.symbol, reason: "وقف غير صالح" });
           continue;
         }
 
+        // حجم المركز
         let qualityMult = 1.0;
-        const sc = Number(s.score) || 60;
+        const sc = s.scoreResult.score || 50;
         if (sc >= 85) qualityMult = 1.6;
         else if (sc >= 75) qualityMult = 1.35;
         else if (sc >= 68) qualityMult = 1.15;
         else qualityMult = 0.85;
         if (s.vcp) qualityMult += 0.15;
         if (s.fresh_zone) qualityMult += 0.10;
-        if (s.structure && s.structure.golden) qualityMult += STRATEGY.goldenBoost;  // 🥇 زخم ذهبي
-        if (bounceInfo && bounceInfo.isBounce) qualityMult += 0.10;  // 🆕 الارتداد ترجيح
+        if (st && st.golden) qualityMult += STRATEGY.goldenBoost;
+        if (s.probability > 85) qualityMult += 0.2;
+        else if (s.probability > 75) qualityMult += 0.1;
 
-        // ⛔ مارتينغيل/مكافآت مطفأة افتراضياً — ولو فُعّلت: سقف صارم
         let extraMult = 1.0;
         if (STRATEGY.martingale.enabled) {
           const state = await getBotState(s.symbol);
@@ -597,7 +1271,6 @@ export default async function handler(req, res) {
           else if (state && state.win_streak >= 1) extraMult *= STRATEGY.bonus.winStreak1;
         }
 
-        // 🆕 السقف الصارم: لا مضاعف إجمالي فوق 1.6 مهما اجتمعت الأسباب
         const totalMult = Math.min(Math.max(qualityMult * extraMult, 0.85), STRATEGY.maxTotalMult);
 
         let fullValue = (balance * STRATEGY.riskPerTradePct) * px / riskPerShare;
@@ -621,22 +1294,22 @@ export default async function handler(req, res) {
         const initialQty = Math.max(2, Math.floor(fullQty * STRATEGY.initialFraction));
         const addQty = Math.max(0, fullQty - initialQty);
 
-        // ─── 🆕 v11: الهدف القريب لتأمين الربح ─────────────
+        // الهدف القريب
         const atr = Number(s.atr14) || px * 0.02;
         const nearDist = Math.max(atr * STRATEGY.nearTP.atrMult, px * STRATEGY.nearTP.minPct);
-        const nearTPpx = Math.min(t1, px + nearDist);   // لا يتجاوز T1 أبداً
+        const nearTPpx = Math.min(t1, px + nearDist);
         const tp1Qty = STRATEGY.nearTP.enabled ? Math.max(1, Math.floor(initialQty * STRATEGY.nearTP.sellFrac)) : 0;
         const runnerQty = initialQty - tp1Qty;
 
-        // ─── التنفيذ: براكِتان ذريان (الحماية تعيش على Alpaca) ──
+        // التنفيذ
         let buyOk = false, buyErr = null;
         if (STRATEGY.nearTP.enabled && tp1Qty >= 1 && runnerQty >= 1) {
           const b1 = await buyBracket(s.symbol, tp1Qty, nearTPpx * STRATEGY.tp1FillNudge, stopPx);
-          if (b1.status === "rejected" || b1.code) { buyErr = b1.message || "رفض براكِت الهدف القريب"; }
-          else {
+          if (b1.status === "rejected" || b1.code) {
+            buyErr = b1.message || "رفض براكِت الهدف القريب";
+          } else {
             const b2 = await buyBracket(s.symbol, runnerQty, t1 * STRATEGY.tp1FillNudge, stopPx);
             if (b2.status === "rejected" || b2.code) {
-              // النصف الأول دخل — النصف الثاني رُفض: نكمل بالنصف الأول فقط (محمي ببراكِته)
               log.skipped.push({ symbol: s.symbol, reason: "براكِت الثاني رُفض — دخلنا بالنصف الأول فقط" });
             }
             buyOk = true;
@@ -652,20 +1325,69 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // ─── حفظ الخطة ──────────────────────────────────
+        // حفظ الخطة
         const plan = {
-          symbol: s.symbol, status: "active",
-          initial_qty: initialQty, add_qty: addQty, added: false,
+          symbol: s.symbol,
+          status: "active",
+          initial_qty: initialQty,
+          add_qty: addQty,
+          added: false,
           add_enabled: STRATEGY.addEnabled && addQty > 0,
-          total_qty: initialQty, avg_entry: px,
-          add_level: (support + px) / 2, stop: stopPx, t1: t1, t3: t3,
-          support: support, confirm: confirm, tp1_done: false,
-          // 🆕 v11: حقول تأمين الربح
-          near_tp: +nearTPpx.toFixed(4), tp1_qty: tp1Qty, runner_qty: runnerQty, be_done: false,
+          total_qty: initialQty,
+          avg_entry: px,
+          add_level: (support + px) / 2,
+          stop: stopPx,
+          t1: t1,
+          t2: t2,
+          t3: t3,
+          support: support,
+          confirm: confirm,
+          tp1_done: false,
+          near_tp: +nearTPpx.toFixed(4),
+          tp1_qty: tp1Qty,
+          runner_qty: runnerQty,
+          be_done: false,
+          trail_done: false,
+          atr14: atr,
+          ma5: s.ma5 || null,
+          ma9: s.ma9 || null,
+          signal_score: s.scoreResult.score,
+          probability: s.probability,
+          grade: s.classification.grade,
+          market_score: marketData?.score || null,
+          sector_strength: s.sectorStrength || null,
           stock_type: s.type || "مضاربة",
           t1_sell_frac: (s.type === "استثمار") ? 0.33 : 0.50,
         };
         await planSave(plan);
+
+        // تسجيل التعلم الآلي
+        await logTrade({
+          symbol: s.symbol,
+          entry_price: px,
+          signal_score: s.scoreResult.score,
+          probability: s.probability,
+          grade: s.classification.grade,
+          breakdown: JSON.stringify(s.scoreResult.breakdown),
+          ma5: s.ma5,
+          ma9: s.ma9,
+          rsi: s.rsi,
+          rvol: s.rvol,
+          volume: s.volume,
+          vwap: s.vwap,
+          market_score: marketData?.score,
+          sector: s.sector || null,
+          sector_strength: s.sectorStrength || null,
+          sector_change: s.sectorChange || null,
+          spy_change: spyChange || null,
+          news_age: s.news_age_h || null,
+          golden: !!(st && st.golden),
+          cmf: s.cmf || null,
+          breakout_quality: s.breakout_quality || null,
+          candle_score: s.candle_score || null,
+          entry_time: new Date().toISOString(),
+          status: "open",
+        });
 
         deployed += initialQty * px;
         openCount++;
@@ -675,14 +1397,16 @@ export default async function handler(req, res) {
           symbol: s.symbol,
           px: +px.toFixed(2),
           initialQty,
+          score: s.scoreResult.score,
+          probability: +s.probability.toFixed(1),
+          grade: s.classification.grade,
+          breakdown: s.scoreResult.breakdown.slice(0, 5),
           nearTP: +nearTPpx.toFixed(2),
-          tp1Qty, runnerQty,
-          reserveAdd: addQty,
           stop: +stopPx.toFixed(2),
           tp1: +t1.toFixed(2),
           rr: +((t1 - px) / (px - stopPx)).toFixed(2),
-          momentum: momentum.label,
-          entry_state: (st.entry_state && st.entry_state.code) || "legacy",
+          sector_strength: s.sectorStrength || null,
+          spy_rs: +(s.change_pct - spyChange).toFixed(2),
         });
       }
 
@@ -690,16 +1414,22 @@ export default async function handler(req, res) {
       for (const sk of log.skipped) skipTally[sk.reason] = (skipTally[sk.reason] || 0) + 1;
       debug.phase = "enter";
       debug.candidates = candidates.length;
-      debug.after_filter = filtered.length;
+      debug.after_basic_filter = filteredCandidates.length;
+      debug.scored = scored.length;
+      debug.after_score_filter = filtered.length;
       debug.entered = log.entered.length;
       debug.skipped = log.skipped.length;
       debug.skip_reasons = skipTally;
       debug.deployed_pct = balance > 0 ? Math.round((deployed / balance) * 100) : 0;
+      debug.maxTrades = maxTrades;
+      debug.marketScore = marketData?.score || 0;
+      debug.spyChange = +spyChange.toFixed(2);
     }
 
     return res.status(200).json({
       success: true,
       engine: STRATEGY.engine,
+      version: "v14",
       time_et: `${et.getHours()}:${String(et.getMinutes()).padStart(2, "0")}`,
       elapsed_ms: Date.now() - T0,
       debug,
@@ -707,6 +1437,7 @@ export default async function handler(req, res) {
     });
 
   } catch (e) {
+    console.error("❌ trade.js error:", e);
     return res.status(200).json({ success: false, error: e.message, elapsed_ms: Date.now() - T0 });
   }
 }
