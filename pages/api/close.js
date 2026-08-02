@@ -1,68 +1,31 @@
-// pages/api/close.js — إغلاق كامل لكل الصفقات المفتوحة
-// ─────────────────────────────────────────────────────────────────
-// يُستدعى الساعة 8:00م الرياض (1:00 PM ET) عبر cron
-// يغلق كل المراكز بسعر السوق سواء حققت الهدف أو لا
-// ─────────────────────────────────────────────────────────────────
-
-const ALPACA_KEY    = process.env.ALPACA_KEY || process.env.NEXT_PUBLIC_ALPACA_KEY;
-const ALPACA_SECRET = process.env.ALPACA_SECRET || process.env.NEXT_PUBLIC_ALPACA_SECRET;
+// pages/api/close.js — إغلاق كل المراكز المفتوحة (طوارئ)
+const ALPACA_KEY    = process.env.ALPACA_KEY;
+const ALPACA_SECRET = process.env.ALPACA_SECRET;
 const ALPACA_BASE   = "https://paper-api.alpaca.markets";
-
-const H = {
-  "APCA-API-KEY-ID":     ALPACA_KEY,
-  "APCA-API-SECRET-KEY": ALPACA_SECRET,
-  "Content-Type":        "application/json",
-};
+const SUPABASE_URL  = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+const H = { "APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET, "Content-Type": "application/json" };
+const SB_H = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" };
 
 export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
   try {
-    // 1. اجلب كل المراكز المفتوحة
-    const posRes = await fetch(`${ALPACA_BASE}/v2/positions`, { headers: H });
-    const positions = await posRes.json();
+    // ألغِ كل الأوامر المفتوحة
+    await fetch(`${ALPACA_BASE}/v2/orders`, { method: "DELETE", headers: H }).catch(() => {});
+    // أغلق كل المراكز (Alpaca: DELETE /v2/positions = تصفية الكل)
+    const r = await fetch(`${ALPACA_BASE}/v2/positions?cancel_orders=true`, { method: "DELETE", headers: H });
+    const result = await r.json().catch(() => []);
 
-    if (!Array.isArray(positions) || positions.length === 0) {
-      return res.status(200).json({
-        success: true,
-        message: "لا توجد صفقات مفتوحة لإغلاقها",
-        closed: 0,
-      });
+    // علّم كل الخطط النشطة مغلقة
+    if (SUPABASE_URL) {
+      await fetch(`${SUPABASE_URL}/rest/v1/bot_positions?status=eq.active`, {
+        method: "PATCH", headers: SB_H,
+        body: JSON.stringify({ status: "closed", updated_at: new Date().toISOString() }),
+      }).catch(() => {});
     }
-
-    // 2. ألغِ كل الأوامر المعلّقة أولاً (مهم قبل الإغلاق)
-    await fetch(`${ALPACA_BASE}/v2/orders?status=open`, {
-      method: "DELETE",
-      headers: H,
-    });
-
-    // 3. أغلق كل المراكز بسعر السوق
-    //    DELETE /v2/positions يغلق الكل دفعة واحدة
-    const closeRes = await fetch(`${ALPACA_BASE}/v2/positions?cancel_orders=true`, {
-      method: "DELETE",
-      headers: H,
-    });
-
-    const closeData = await closeRes.json();
-
-    // 4. تجهيز التقرير
-    const closed = Array.isArray(closeData) ? closeData : [];
-    const summary = closed.map(c => ({
-      symbol: c.symbol,
-      status: c.status,
-      qty:    c.body?.qty || null,
-    }));
-
-    return res.status(200).json({
-      success: true,
-      message: `تم إغلاق ${closed.length} صفقة عند 8:00م`,
-      closed:  closed.length,
-      positions_before: positions.length,
-      details: summary,
-    });
-
-  } catch (error) {
-    return res.status(200).json({
-      success: false,
-      error:   error.message,
-    });
+    const count = Array.isArray(result) ? result.length : 0;
+    return res.status(200).json({ success: true, message: `تم إغلاق ${count} مركز`, closed: count });
+  } catch (e) {
+    return res.status(200).json({ success: false, error: e.message });
   }
 }
