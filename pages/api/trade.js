@@ -38,7 +38,7 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_AN
 // ─── الإعدادات (لمسة المدير) ─────────────────────────────────────────
 const CFG = {
   // بوابة الدخول — تثق بالرادار + بصمة الرابح
-  MIN_SCORE: 55,             // الحدّ الأدنى لـ predictionScore من الرادار (بعد ×0.6 يعني رادار قوي)
+  MIN_SCORE: 78,             // v20.6: رُفع من 55 مع تطبيع السكور (÷0.7). رادار قوي فعلاً
   REJECT_HOT: true,          // ارفض الاختراقات (أثبتت خسارتها)
   RVOL_MAX: 5.0,             // ارفض المتفجّر (فخّ)
   RVOL_MIN: 0.5,             // ارفض الميّت تماماً
@@ -317,12 +317,15 @@ export default async function handler(req, res) {
         debug.entries_blocked = blocked;
       } else {
         // اقرأ إشارات الرادار (نثق بدماغه — لا نعيد التقييم)
+        // 🆕 نستبعد المايكرو-كاب (scan_type=lowprice) — خطرة جداً لبوت آلي.
         let candidates = [];
         try {
           const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?signal_date=eq.${et.toISOString().split("T")[0]}&order=score.desc&limit=100`, { headers: SB_H });
           if (sr.ok) {
             const rows = await sr.json();
-            candidates = (Array.isArray(rows) ? rows : []).map(r => ({ ...r, price: r.entry_price }));
+            candidates = (Array.isArray(rows) ? rows : [])
+              .filter(r => r.scan_type !== 'lowprice')   // الأسهم العادية فقط
+              .map(r => ({ ...r, price: r.entry_price }));
           }
         } catch {}
         debug.candidates = candidates.length;
