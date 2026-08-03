@@ -332,18 +332,25 @@ export default async function handler(req, res) {
         debug.entries_blocked = blocked;
       } else {
         // اقرأ إشارات الرادار (نثق بدماغه — لا نعيد التقييم)
-        // 🆕 v15.1: نقرأ الإشارات الحديثة مباشرة (آخر 12 ساعة) بدل تطابق تاريخ
-        //   هشّ (toISOString يحوّل لـUTC فيسبّب عدم تطابق). أكثر متانة.
-        // 🆕 نستبعد المايكرو-كاب (scan_type=lowprice) — خطرة جداً لبوت آلي.
+        // 🆕 v15.1: نقرأ الإشارات الحديثة مباشرة (آخر 12 ساعة).
         let candidates = [];
         try {
           const since = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
-          const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?status=eq.OPEN&created_at=gte.${since}&order=score.desc&limit=100`, { headers: SB_H });
+          const url = `${SUPABASE_URL}/rest/v1/signals?status=eq.OPEN&created_at=gte.${since}&order=score.desc&limit=100`;
+          debug.sb_url_set = !!SUPABASE_URL;
+          debug.sb_key_set = !!SUPABASE_KEY;
+          debug.sb_key_type = SUPABASE_KEY ? (SUPABASE_KEY.length > 100 ? 'long(service?)' : 'short(anon?)') : 'none';
+          const sr = await fetch(url, { headers: SB_H });
+          debug.sb_status = sr.status;
           if (sr.ok) {
             const rows = await sr.json();
+            debug.rows_returned = Array.isArray(rows) ? rows.length : 'not-array';
             candidates = (Array.isArray(rows) ? rows : [])
-              .filter(r => r.type !== 'lowprice' && r.scan_type !== 'lowprice')  // الأسهم العادية فقط
+              .filter(r => r.type !== 'lowprice' && r.scan_type !== 'lowprice')
               .map(r => ({ ...r, price: r.entry_price }));
+            debug.after_filter = candidates.length;
+          } else {
+            debug.sb_error_body = (await sr.text()).slice(0, 200);
           }
         } catch (e) { debug.read_error = e.message; }
         debug.candidates = candidates.length;
