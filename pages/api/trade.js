@@ -199,15 +199,30 @@ function winnerGate(s) {
   // 5) لم ينفجر بعد (الفرصة حيّة)
   if (s.change_pct != null && (s.change_pct > CFG.CHANGE_MAX || s.change_pct < CFG.CHANGE_MIN))
     return { ok: false, reason: `change ${s.change_pct}% خارج النطاق` };
-  // 6) بنية صالحة (وقف وأهداف من الرادار)
-  if (!s.structure || s.structure.stop == null || s.structure.t1 == null)
+  // 6) بنية صالحة (وقف وأهداف من الرادار) — مع مرونة للتنسيق
+  const st = _parseStructure(s);
+  if (!st || st.stop == null || st.t1 == null)
     return { ok: false, reason: 'بنية ناقصة' };
+  s._st = st; // نحفظها للاستخدام لاحقاً
   // 7) داخل منطقة الدخول فقط (لا ملاحقة)
   if (CFG.REQUIRE_IN_ZONE) {
-    const code = s.structure.entry_state?.code || s.entry_state;
+    const code = st.entry_state?.code || s.entry_state;
     if (code && code !== 'in_zone') return { ok: false, reason: `ليس بمنطقة الدخول (${code})` };
   }
   return { ok: true, reason: 'بصمة الرابح ✅' };
+}
+
+// يقرأ structure سواء كان كائناً أو نصّ JSON، ويعوّض من الأعمدة المسطّحة
+function _parseStructure(s) {
+  let st = s.structure;
+  if (typeof st === 'string') { try { st = JSON.parse(st); } catch { st = null; } }
+  if (!st || typeof st !== 'object') st = {};
+  // تعويض من الأعمدة المسطّحة إن غابت من structure
+  const stop = st.stop ?? s.stop_loss ?? null;
+  const t1 = st.t1 ?? s.target1 ?? null;
+  const t3 = st.t3 ?? s.target3 ?? s.target1 ?? null;
+  if (stop == null || t1 == null) return null;
+  return { ...st, stop: Number(stop), t1: Number(t1), t3: Number(t3) };
 }
 
 // ════════════════ MAIN ════════════════
@@ -317,17 +332,20 @@ export default async function handler(req, res) {
         debug.entries_blocked = blocked;
       } else {
         // اقرأ إشارات الرادار (نثق بدماغه — لا نعيد التقييم)
+        // 🆕 v15.1: نقرأ الإشارات الحديثة مباشرة (آخر 12 ساعة) بدل تطابق تاريخ
+        //   هشّ (toISOString يحوّل لـUTC فيسبّب عدم تطابق). أكثر متانة.
         // 🆕 نستبعد المايكرو-كاب (scan_type=lowprice) — خطرة جداً لبوت آلي.
         let candidates = [];
         try {
-          const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?signal_date=eq.${et.toISOString().split("T")[0]}&order=score.desc&limit=100`, { headers: SB_H });
+          const since = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
+          const sr = await fetch(`${SUPABASE_URL}/rest/v1/signals?status=eq.OPEN&created_at=gte.${since}&order=score.desc&limit=100`, { headers: SB_H });
           if (sr.ok) {
             const rows = await sr.json();
             candidates = (Array.isArray(rows) ? rows : [])
-              .filter(r => r.scan_type !== 'lowprice')   // الأسهم العادية فقط
+              .filter(r => r.type !== 'lowprice' && r.scan_type !== 'lowprice')  // الأسهم العادية فقط
               .map(r => ({ ...r, price: r.entry_price }));
           }
-        } catch {}
+        } catch (e) { debug.read_error = e.message; }
         debug.candidates = candidates.length;
 
         // بوابة بصمة الرابح
@@ -367,7 +385,8 @@ export default async function handler(req, res) {
           if (drift > 3) { log.skipped.push({ symbol: s.symbol, reason: `انزلاق ${drift.toFixed(1)}%` }); continue; }
 
           // الوقف والأهداف من الرادار مباشرة (بنية المستويات الجديدة)
-          const st = s.structure;
+          const st = s._st || _parseStructure(s);
+          if (!st) { log.skipped.push({ symbol: s.symbol, reason: "بنية غير قابلة للقراءة" }); continue; }
           let stopPx = Number(st.stop);
           const t1 = Number(st.t1);
           const t3 = Number(st.t3 || st.t1);
